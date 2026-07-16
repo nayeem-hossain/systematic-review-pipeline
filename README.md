@@ -4,7 +4,7 @@ A reusable, dependency-light toolkit for running a systematic literature review
 (SLR) end to end: protocol scoping, multi-source search, deduplication,
 screening, open-access PDF retrieval, and deterministic citation verification.
 It pairs a documented 7-stage methodology (PRISMA 2020 + Kitchenham & Charters
-2007) with five small, standalone Python scripts that implement the
+2007) with a set of small, standalone Python scripts that implement the
 mechanical parts of that methodology -- so a review stays reproducible instead
 of living in a pile of manually-edited spreadsheets.
 
@@ -15,7 +15,39 @@ GANs, and federated learning to network security. Swap the search terms, the
 PICOC table, and the inclusion/exclusion criteria for your own topic; the
 pipeline and the method don't change.
 
-## Quick start
+## Two ways to run this
+
+**a) Guided (recommended): `python slr.py`**
+
+An interactive terminal (needs `questionary` + `rich`, see [Running the
+pipeline](#running-the-pipeline) below) that walks you through a setup wizard
+-- topic, keywords, year range, contact email, optional Semantic Scholar /
+CORE API keys, which sources to search, how many snowball phases, which web
+chatbot you'll paste screening prompts into, your reviewer name -- then runs
+each phase for you: search -> dedup -> prescreen skeleton -> manual-paste
+AI-assist screening -> human review gate -> snowball into the next phase.
+Once every phase is done it opens a consolidation menu: merge included
+studies across phases, download PDFs, verify citations, build the extraction
+sheet, generate figures, export references, and write the provenance report.
+
+It is **resumable**: re-run `python slr.py`, choose "Resume an existing
+review," and it fast-forwards past every already-completed stage using saved
+checkpoints. Every review lives under its own `runs/<run-id>/` workspace
+(gitignored -- see [The srp/ library](#the-srp-library-config-state-provenance-export)
+below).
+
+```bash
+python slr.py
+```
+
+**b) Manual (advanced / transparent): run the stage scripts yourself**
+
+Every stage `slr.py` runs under the hood is also a standalone script under
+`scripts/`, invocable directly. This is the same pipeline with nothing
+hidden -- useful if you want to inspect or hand-edit intermediate CSVs
+between stages, run a single stage in isolation, or wire the pipeline into
+your own automation. See [Running the pipeline](#running-the-pipeline) for
+the full command sequence.
 
 ```bash
 git clone <this-repo-url>
@@ -27,80 +59,93 @@ pip install -r requirements.txt
 
 cp .env.example .env                 # fill in a real MAILTO address
 
-python search.py \
+python scripts/search.py \
     --query '"intrusion detection" AND "machine learning"' \
     --year-from 2020 --year-to 2026 \
     --mailto you@example.com \
     --max-per-source 40 \
     --out output/candidates.csv
 
-python dedup.py  --in output/candidates.csv       --out output/candidates_dedup.csv
-python screen.py --in output/candidates_dedup.csv --out output/screening.csv
-python download.py --in output/candidates_dedup.csv --mailto you@example.com --outdir pdfs
-python verify_citations.py --csv output/candidates_dedup.csv --limit 10
+python scripts/dedup.py  --in output/candidates.csv       --out output/candidates_dedup.csv
+python scripts/screen.py --in output/candidates_dedup.csv --out output/screening.csv
+
+# Manual-paste AI-assist screening (no API keys) -- see "AI-assist screening" below
+python scripts/assist.py build --in output/candidates_dedup.csv --stage ta \
+    --out prompt_ta.txt --topic "ML-IDS systematic review"
+# paste prompt_ta.txt into any free web chatbot; save the reply to reply.txt
+python scripts/assist.py parse --response reply.txt --into output/screening.csv --stage ta
+
+python scripts/download.py --in output/candidates_dedup.csv --mailto you@example.com --outdir pdfs
+python scripts/verify_citations.py --csv output/candidates_dedup.csv --limit 10
 
 # Once a human has filled in ta_decision/ft_decision in screening.csv:
-python extract.py --in output/screening.csv --out output/extraction.csv
+python scripts/extract.py --in output/screening.csv --out output/extraction.csv
 
 # Once a human has filled in venue_tier/R/A/T/C/quality_tier in extraction.csv:
-python figures.py --quality output/extraction.csv --outdir figures
+python scripts/figures.py --quality output/extraction.csv --outdir figures
+
+# Export the included set for your reference manager:
+python scripts/export.py --in output/extraction.csv --out-bib references.bib \
+    --out-ris references.ris --included-only
 ```
 
-This repository ships with a **live demonstration run** already committed:
-`output/` holds the real CSVs produced by an actual ML-IDS search (candidates,
-dedup, screening, download log, citation verification), and `pdfs/` holds the
-open-access PDFs that `download.py` fetched. `examples/` additionally keeps a
-small curated sample of each output -- including a fully-decided screening
-sheet, a filled-in extraction/quality-scoring sheet, and the three figures
-`figures.py` renders from them (`examples/figures/`) -- so you can see the CSV
-and figure shapes at a glance; see `examples/README.md` for the exact commands
-used and one real API gotcha hit along the way. If you fork this for your own
-review, delete `output/`, `pdfs/`, and `figures/` and regenerate them with the
-scripts.
+A real run of either path writes `output/` and `pdfs/` (manual path) or
+`runs/<run-id>/` (guided path) into your working directory -- both are
+gitignored. This repository ships with a **committed demonstration run**
+instead, under `examples/`: `examples/demo_output/` holds the real CSVs
+produced by an actual ML-IDS search (candidates, dedup, screening, download
+log, citation verification), and `examples/demo_pdfs/` holds the open-access
+PDFs that `scripts/download.py` fetched. `examples/` additionally keeps a small
+curated sample of each output -- including a fully-decided screening sheet, a
+filled-in extraction/quality-scoring sheet, and the figures `scripts/figures.py`
+renders from them (`examples/figures/`) -- so you can see the CSV and figure
+shapes at a glance; see `examples/README.md` for the exact commands used and
+one real API gotcha hit along the way.
 
 ### What you change vs. what you don't
 
-Every script in this repo follows the same convention, stated right after its
-module docstring: the **command-line flags are what you're meant to change**
-day to day (search terms, thresholds, paths, `--mailto`) -- run
-`python <script>.py --help` to see them. The code *below* that point is marked
-in two ways: `# --- API internals ---` over anything that builds a request URL
-or parses a response from an external API (breaks only if that API's contract
-changes), and `# --- core logic ---` over the dedup match loop, the PRISMA
-count derivation, and the plotting geometry (safe to leave alone unless you're
-deliberately extending the tool). You should not need to edit anything below
-either marker for a normal review.
+Every script under `scripts/` follows the same convention, stated right after
+its module docstring: the **command-line flags are what you're meant to
+change** day to day (search terms, thresholds, paths, `--mailto`) -- run
+`python scripts/<script>.py --help` to see them. The code *below* that point
+is marked in two ways: `# --- API internals ---` over anything that builds a
+request URL or parses a response from an external API (breaks only if that
+API's contract changes), and `# --- core logic ---` over the dedup match
+loop, the PRISMA count derivation, and the plotting geometry (safe to leave
+alone unless you're deliberately extending the tool). You should not need to
+edit anything below either marker for a normal review. `slr.py` and the
+`srp/` library follow the same two markers for the same reason -- the wizard
+prompts and consolidation menu are what you interact with; the phase
+orchestration and snowball logic underneath are marked `# --- core logic ---`
+and don't need touching for a normal review either.
 
-## Repo structure
+## Repository layout
 
 ```
 systematic-review-pipeline/
-├── README.md              # this file -- methodology + pipeline usage
-├── LICENSE                # MIT -- applies to the *.py scripts
-├── LICENSE-docs            # CC-BY-4.0 -- applies to README.md / examples/README.md
+├── slr.py                  # guided interactive entry point (run this)
+├── srp/                     # importable library: config, state, provenance, llm_assist, export
+├── scripts/                  # the individual stage CLIs (manual / advanced use)
+│   ├── search.py               # query OpenAlex, Semantic Scholar, Crossref, arXiv
+│   ├── dedup.py                  # DOI-exact then fuzzy-title deduplication
+│   ├── screen.py                   # build the title/abstract + full-text screening sheet
+│   ├── assist.py                     # manual-paste AI-assist screening (build prompt / parse reply)
+│   ├── download.py                     # resolve + fetch open-access PDFs (arXiv, Unpaywall, OpenAlex, S2, CORE)
+│   ├── verify_citations.py               # fabricated-citation guard: DOI -> Crossref -> diff
+│   ├── extract.py                          # build the Stage-4/5 extraction + quality-scoring template
+│   ├── figures.py                            # PRISMA flow diagrams + quality-/venue-tier charts
+│   └── export.py                               # export included studies to BibTeX / RIS
+├── examples/                # demo inputs, a completed demo run, and generated figures
+│   ├── README.md
+│   ├── *_sample.csv            # small curated sample of each stage's output
+│   ├── demo_output/              # CSV outputs of the ML-IDS demonstration run
+│   ├── demo_pdfs/                  # open-access PDFs fetched in the demo run
+│   └── figures/                      # prisma_flow, prisma_2020, quality_tiers, venue_tiers (.png + .pdf)
 ├── requirements.txt
 ├── .env.example
-├── .gitignore
-├── search.py               # query OpenAlex, Semantic Scholar, Crossref, arXiv
-├── dedup.py                 # DOI-exact then fuzzy-title deduplication
-├── screen.py                 # build the title/abstract + full-text screening sheet
-├── download.py                 # resolve + fetch open-access PDFs (Unpaywall, arXiv)
-├── verify_citations.py          # fabricated-citation guard: DOI -> Crossref -> diff
-├── extract.py                     # build the Stage-4/5 extraction + quality-scoring template
-├── figures.py                      # PRISMA flow diagram + quality-/venue-tier charts
-├── output/                       # committed demo run: real search / dedup / screen / verify CSVs
-├── pdfs/                         # committed demo run: open-access PDFs download.py fetched
-├── figures/                       # your own generated figures (regenerate with figures.py)
-└── examples/                     # small curated sample of the outputs above
-    ├── README.md
-    ├── candidates_sample.csv
-    ├── candidates_dedup_sample.csv
-    ├── screening_sample.csv
-    ├── screening_decided_sample.csv    # screening_sample.csv with realistic decisions filled in
-    ├── quality_scored_sample.csv       # a filled-in extraction/quality-scoring sheet
-    ├── download_log_sample.csv
-    ├── citation_verification_sample.csv
-    └── figures/                        # prisma_flow / quality_tiers / venue_tiers, .png + .pdf
+├── LICENSE                  # MIT -- applies to the code (slr.py, srp/, scripts/)
+├── LICENSE-docs              # CC-BY-4.0 -- applies to README.md / examples/README.md
+└── .gitignore                 # ignores output/, pdfs/, runs/ -- a real run's working files
 ```
 
 ## The end-to-end workflow
@@ -113,14 +158,19 @@ Protocol  ->  Search  ->  Screen  ->  Extract  ->  Quality-assess  ->  Synthesiz
   pre-reg)      queries)   full-text)  numbers)      High per dim)      assessment)     data avail.)
 ```
 
-`search.py` -> `dedup.py` -> `screen.py` cover Search and the mechanical half
-of Screening; the decision columns in `screen.py`'s output are intentionally
-left blank for a human. `download.py` retrieves full text for the full-text
-screening and extraction stages. `extract.py` builds the Extract +
-Quality-assess template (`R`/`A`/`T`/`C` rubric columns, again left blank for
-a human). `verify_citations.py` runs continuously, against every citation you
-plan to use, from extraction through final manuscript. `figures.py` covers
-Report's PRISMA flow diagram and the quality-/venue-tier distribution charts.
+`scripts/search.py` -> `scripts/dedup.py` -> `scripts/screen.py` cover Search
+and the mechanical half of Screening; `scripts/assist.py` optionally
+manual-paste-AI-assists the screening decisions, but the decision columns
+stay a human call either way. `scripts/download.py` retrieves full text for
+the full-text screening and extraction stages. `scripts/extract.py` builds
+the Extract + Quality-assess template (`R`/`A`/`T`/`C` rubric columns, again
+left blank for a human). `scripts/verify_citations.py` runs continuously,
+against every citation you plan to use, from extraction through final
+manuscript. `scripts/figures.py` covers Report's PRISMA flow diagram(s) and
+the quality-/venue-tier distribution charts. `scripts/export.py` covers
+Report's reference-list handoff to your citation manager. `slr.py`
+orchestrates all of the above end to end, plus the snowball loop between
+search rounds and the always-on provenance log.
 
 ---
 
@@ -338,7 +388,7 @@ PRISMA 2020's two-stage screening: **title/abstract** against the
 inclusion/exclusion criteria, then **full-text** eligibility for everything
 that survives. Before either pass, de-duplicate -- exact DOI match first, then
 fuzzy title match for DOI-less records (arXiv preprints, some gray-adjacent
-sources). This is exactly what `dedup.py` automates (see "Running the pipeline" below).
+sources). This is exactly what `scripts/dedup.py` automates (see "Running the pipeline" below).
 
 **Illustrative screening funnel** (a generic, illustrative shape -- not real
 study results -- to show the level of detail a PRISMA flow diagram needs):
@@ -369,15 +419,15 @@ just a bare total.
    `screen.py`'s `screening.csv` schema below), then compute kappa on the two
    independent decision columns. A kappa below about 0.6 signals the criteria
    need tightening before you screen further, not just "agree to disagree."
-2. **A dedicated dedup tool, not manual eyeballing.** `dedup.py` (exact DOI
-   match, then `rapidfuzz` token-set-ratio fuzzy title match) is deterministic
-   and re-runnable, unlike a human scanning a spreadsheet.
+2. **A dedicated dedup tool, not manual eyeballing.** `scripts/dedup.py`
+   (exact DOI match, then `rapidfuzz` token-set-ratio fuzzy title match) is
+   deterministic and re-runnable, unlike a human scanning a spreadsheet.
 3. **A documented screening log from the first record onward.** Every
    screened record gets an explicit decision + reason at both stages, even
    for the overwhelming majority you exclude in seconds -- this is what makes
    a PRISMA flow diagram auditable rather than asserted.
 4. **Verify every downloaded PDF's title page against its expected title
-   before it enters extraction.** Automated OA resolution (`download.py`) can
+   before it enters extraction.** Automated OA resolution (`scripts/download.py`) can
    fetch the wrong PDF -- a similarly-titled paper, a landing page mislabeled
    as a PDF -- often enough to matter. Check the actual file every time.
 
@@ -567,16 +617,23 @@ synthesis rather than just trust it.
 
 ## Running the pipeline
 
-Dependency-light: `requests`, `pandas`, `rapidfuzz`, `matplotlib`. Requires Python 3.9+.
+Dependency-light: the individual stage scripts under `scripts/` need only
+`requests`, `pandas`, `rapidfuzz`, and `matplotlib`. The guided `slr.py`
+entry point additionally needs `questionary` and `rich` for its terminal UI
+-- both are already in `requirements.txt`. Requires Python 3.9+.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### `search.py` -- query four scholarly APIs, write `candidates.csv`
+This section documents each stage script individually, for the manual /
+advanced path. `python slr.py` (see [Two ways to run this](#two-ways-to-run-this))
+runs the same scripts for you, in order, with checkpointed resume.
+
+### `scripts/search.py` -- query four scholarly APIs, write `candidates.csv`
 
 ```bash
-python search.py \
+python scripts/search.py \
     --query '"intrusion detection" AND "machine learning"' \
     --year-from 2020 --year-to 2026 \
     --mailto you@example.com \
@@ -594,10 +651,10 @@ limit. `--mailto` is required (falls back to the `MAILTO` environment
 variable) -- OpenAlex and Crossref use it for their "polite pool" of better
 rate limits, per their own API docs.
 
-### `dedup.py` -- de-duplicate by DOI, then fuzzy title match
+### `scripts/dedup.py` -- de-duplicate by DOI, then fuzzy title match
 
 ```bash
-python dedup.py --in output/candidates.csv --out output/candidates_dedup.csv \
+python scripts/dedup.py --in output/candidates.csv --out output/candidates_dedup.csv \
     --title-threshold 92
 ```
 
@@ -608,10 +665,10 @@ O(n²) over the whole corpus). Adds `doi_norm`, `title_norm`, `duplicate_of`,
 `dedup_method` columns; canonical (non-duplicate) records have an empty
 `duplicate_of`.
 
-### `screen.py` -- build the screening spreadsheet
+### `scripts/screen.py` -- build the screening spreadsheet
 
 ```bash
-python screen.py --in output/candidates_dedup.csv --out output/screening.csv
+python scripts/screen.py --in output/candidates_dedup.csv --out output/screening.csv
 ```
 
 Writes one row per canonical record with blank `ta_decision`/`ta_reason`
@@ -620,18 +677,67 @@ plus a `reviewer` column, for a human to fill in. Duplicate this file per
 reviewer (or add a second reviewer's decision columns) before computing
 inter-rater agreement.
 
-### `download.py` -- resolve and fetch open-access PDFs
+### `scripts/assist.py` -- manual-paste AI-assist screening
+
+No API keys, no cost, no automated calls to any LLM provider. `assist.py
+build` compiles a ready-to-paste screening prompt with the undecided records
+embedded in it; you paste that prompt into **any** free web chatbot (ChatGPT,
+Claude, Gemini, Copilot, or any other), save its reply to a text file, and
+`assist.py parse` reads the reply back and writes `include`/`exclude`/`maybe`
+decisions plus a one-sentence reason into `screening.csv`.
 
 ```bash
-python download.py --in output/candidates_dedup.csv --mailto you@example.com \
+python scripts/assist.py build --in output/candidates_dedup.csv --stage ta \
+    --out prompt_ta.txt --topic "ML-IDS systematic review"
+# -> paste prompt_ta.txt into your chatbot of choice; save the reply to reply.txt
+
+python scripts/assist.py parse --response reply.txt --into output/screening.csv --stage ta
+```
+
+`--stage` is `ta` (title/abstract) or `ft` (full text) -- run `build`/`parse`
+once per stage. `--batch-size` (default 20) and `--start` let you keep each
+paste small enough for a chatbot's context window and work through a large
+corpus in batches without re-sending already-screened rows. `build` already
+skips any row with a decision filled in, so re-running it after a partial
+`parse` only re-prompts what's still undecided.
+
+**The AI only assists -- it does not decide.** Every `assist.py`-parsed
+decision is a *proposed* decision, written into the same `ta_decision`/
+`ft_decision` columns a human would fill in by hand, with `reviewer` set to
+`ai-assisted` where left blank so it's traceable later. The actual
+inclusion/exclusion call happens at the human review gate (`slr.py`'s "Human
+review gate" step in the guided path; a manual read-through of
+`screening.csv` in the manual path) -- see the integrity guardrails below.
+
+This is a different tool for a different job than the "AI tools for
+writing/reading" section further down: that section is about using an LLM to
+draft or read prose (search-term expansion, section drafting, synthesis
+summaries); `assist.py` is specifically the screening-assist step, and unlike
+those tasks it needs no account, API key, or paid subscription -- any free
+web chatbot works.
+
+### `scripts/download.py` -- resolve and fetch open-access PDFs
+
+```bash
+python scripts/download.py --in output/candidates_dedup.csv --mailto you@example.com \
     --outdir pdfs --max-downloads 50
 ```
 
-Tries, per record: an arXiv direct-link pattern (no network lookup needed to
-resolve), then Unpaywall (any record with a DOI). `--mailto` is required by
-Unpaywall's API on every request. Writes `output/download_log.csv` (columns:
-`id, doi, oa_status, method, saved_path`); records with no open-access copy
-are logged as such and skipped, not force-downloaded.
+Tries, per record, in order: an arXiv direct-link pattern (no network lookup
+needed to resolve), then Unpaywall, OpenAlex, Semantic Scholar, and CORE (any
+record with a DOI; CORE also falls back to a title search). `--mailto` is
+required by Unpaywall's API on every request and used as the polite-pool
+contact for OpenAlex. CORE is optional -- pass `--core-api-key` (or set
+`CORE_API_KEY` in `.env`, see `.env.example`) to enable it; without a key
+that source is skipped. `--sources` overrides the order/set of sources tried
+(default `arxiv,unpaywall,openalex,semanticscholar,core`).
+
+Writes `output/download_log.csv` (columns: `id, doi, oa_status, method,
+saved_path`); records with no open-access copy are logged as such and
+skipped, not force-downloaded. Every record that ends without a saved PDF is
+also written to `--report` (default `output/manual_download_needed.csv`,
+columns: `id, doi, title, url, tried, reason`) so you know exactly which
+PDFs need manual retrieval, and why each automated source failed.
 
 **A real gotcha:** Unpaywall specifically rejects `@example.com`/`@example.org`
 placeholder addresses with an HTTP 422 ("please use your own email address").
@@ -645,10 +751,10 @@ Automated resolution gets the wrong PDF often enough to matter. Check every
 downloaded PDF's title page against the expected title before it enters
 extraction.
 
-### `extract.py` -- build the Stage-4/5 extraction + quality-scoring template
+### `scripts/extract.py` -- build the Stage-4/5 extraction + quality-scoring template
 
 ```bash
-python extract.py --in output/screening.csv --out output/extraction.csv \
+python scripts/extract.py --in output/screening.csv --out output/extraction.csv \
     --include-col ft_decision
 ```
 
@@ -670,16 +776,16 @@ Stage-4/5 template, left blank for a human reviewer.
 `A`/`B`/`C` letter grade a reviewer derives from them via a published
 aggregation formula, decided before scoring begins.
 
-### `verify_citations.py` -- the fabricated-citation guard
+### `scripts/verify_citations.py` -- the fabricated-citation guard
 
 ```bash
 # Check every DOI in a CSV against what it actually resolves to on Crossref
-python verify_citations.py --csv output/candidates_dedup.csv \
+python scripts/verify_citations.py --csv output/candidates_dedup.csv \
     --doi-col doi --title-col title --limit 10 \
     --out output/citation_verification.csv
 
 # Check a single ad hoc citation
-python verify_citations.py --doi 10.1002/ett.4150 \
+python scripts/verify_citations.py --doi 10.1002/ett.4150 \
     --claimed-title "Network intrusion detection system: A systematic study of machine learning and deep learning approaches"
 ```
 
@@ -692,13 +798,13 @@ legitimate-looking paper that has already passed title-level screening.
 
 ### Figures (after screening + scoring)
 
-`figures.py` generates the Stage 7 reporting figures directly from the
-pipeline's own CSVs -- no manual diagramming tool needed. Every figure is
+`scripts/figures.py` generates the Stage 7 reporting figures directly from
+the pipeline's own CSVs -- no manual diagramming tool needed. Every figure is
 written as both a 300 dpi PNG (for a manuscript/slide) and a vector PDF (for
 print/typesetting).
 
 ```bash
-python figures.py \
+python scripts/figures.py \
     --screening output/screening.csv \
     --dedup output/candidates_dedup.csv \
     --candidates output/candidates.csv \
@@ -706,47 +812,126 @@ python figures.py \
     --outdir figures
 ```
 
-Three figures land in `--outdir`:
+Four figures land in `--outdir`:
 
-1. **`prisma_flow.png`/`.pdf`** -- the PRISMA 2020 flow diagram (Identification
-   -> Screening -> Eligibility -> Included), drawn with matplotlib patches and
-   arrows. Counts are derived automatically: records identified from
-   `--candidates`; duplicates removed from `--dedup`'s `duplicate_of` column;
-   records screened, and excluded/assessed/included counts, from
-   `--screening`'s `ta_decision`/`ft_decision` columns (full-text exclusion
-   reasons are summarized from `ft_reason`, if present). Pass
-   `--identified`/`--duplicates-removed`/`--screened`/`--excluded-ta`/
-   `--assessed-ft`/`--excluded-ft`/`--included` to override any single box with
-   a final, manually-decided number -- e.g. once the review is complete and the
-   published diagram should match the exact numbers in the manuscript. Every
-   count actually used (derived or overridden) is printed to stdout.
-2. **`quality_tiers.png`/`.pdf`** -- a bar chart of the `A`/`B`/`C`
+1. **`prisma_flow.png`/`.pdf`** -- the simplified PRISMA 2020 flow diagram
+   (Identification -> Screening -> Eligibility -> Included), drawn with
+   matplotlib patches and arrows. Counts are derived automatically: records
+   identified from `--candidates`; duplicates removed from `--dedup`'s
+   `duplicate_of` column; records screened, and excluded/assessed/included
+   counts, from `--screening`'s `ta_decision`/`ft_decision` columns
+   (full-text exclusion reasons are summarized from `ft_reason`, if
+   present). Pass `--identified`/`--duplicates-removed`/`--screened`/
+   `--excluded-ta`/`--assessed-ft`/`--excluded-ft`/`--included` to override
+   any single box with a final, manually-decided number -- e.g. once the
+   review is complete and the published diagram should match the exact
+   numbers in the manuscript. Every count actually used (derived or
+   overridden) is printed to stdout.
+2. **`prisma_2020.png`/`.pdf`** -- the **official PRISMA 2020 three-column
+   template**: previous studies | new studies via databases & registers |
+   new studies via other methods. The snowball phases (search rounds beyond
+   the first, run via keyword expansion rather than a fresh database query)
+   populate the "other methods" column. Every number the pipeline actually
+   knows -- identified, duplicates removed, screened, excluded at TA,
+   assessed at full text, included -- is filled in automatically, exactly
+   like `prisma_flow.png`. Boxes the pipeline has no way to know
+   (registers, automation tools used, a previous-version count, and most of
+   the "other methods" column) are left as `(n = )`, exactly like the
+   fillable official template, for the reviewer to complete by hand. See
+   `examples/figures/prisma_2020.png` for a rendered example.
+3. **`quality_tiers.png`/`.pdf`** -- a bar chart of the `A`/`B`/`C`
    `quality_tier` counts from `--quality` (default `output/extraction.csv`).
-3. **`venue_tiers.png`/`.pdf`** -- a bar chart of the `T1`/`T2`/`T3`
+4. **`venue_tiers.png`/`.pdf`** -- a bar chart of the `T1`/`T2`/`T3`
    `venue_tier` counts from the same file.
 
 Both tier charts render a clear "no data yet" placeholder instead of crashing
 if their column is missing or entirely blank -- expected on a first run,
 before a human has filled in `extraction.csv`. See `examples/figures/` for
-what all three look like once the extraction/quality sheet is actually filled
+what all four look like once the extraction/quality sheet is actually filled
 in (rendered from `examples/screening_decided_sample.csv` and
 `examples/quality_scored_sample.csv`; commands in `examples/README.md`).
+
+### `scripts/export.py` -- export references for your citation manager
+
+```bash
+python scripts/export.py --in output/extraction.csv --out-bib references.bib \
+    --out-ris references.ris --included-only
+```
+
+Turns the final included-studies set into `references.bib` (BibTeX, for
+LaTeX/Overleaf) and `references.ris` (RIS, for Zotero/Mendeley/EndNote).
+`--in` accepts `output/extraction.csv` (has `authors`) or, before extraction
+has run, `output/screening.csv` (no `authors` column, so exported entries
+will be missing it). `--included-only` filters to rows marked `include` in
+`ft_decision` (falling back to `ta_decision` if `ft_decision` isn't present
+or is entirely blank). `--formats` (default `bibtex,ris`) restricts output to
+one format if you only need one.
+
+---
+
+## The `srp/` library (config, state, provenance, export)
+
+`slr.py` and `scripts/assist.py`/`scripts/export.py` are built on a small
+importable library under `srp/`, rather than reimplementing run bookkeeping
+per script:
+
+- **`srp/config.py`** -- `ReviewConfig`: the review's settings (topic,
+  keywords, year range, sources, thresholds, reviewer name, which chatbot is
+  doing AI-assist) as one JSON-serializable dataclass, saved to and loaded
+  from `runs/<run-id>/config.json`.
+- **`srp/state.py`** -- `RunState`: a per-review workspace under
+  `runs/<run-id>/`, with a `state.json` of per-phase/per-stage checkpoints
+  (what `slr.py`'s "Resume" option fast-forwards past) and an append-only
+  `decisions.jsonl` decision log. That log doubles as a cross-phase
+  "already-judged" cache keyed by normalized DOI or title
+  (`record_key()`) -- so when phase 2's snowball search re-surfaces a record
+  already screened in phase 1, it's silently skipped rather than re-asked
+  about.
+- **`srp/provenance.py`** -- `Provenance`: an always-on run manifest. Every
+  search query, its date, source, and hit count; every dedup pass; every
+  AI-assisted screening batch and its parsed counts; every human review-gate
+  override -- all logged as one JSON line per event to
+  `runs/<run-id>/provenance.jsonl`, then rendered to a human-readable
+  `runs/<run-id>/PROVENANCE.md` (via the consolidation menu's "Write
+  provenance report", or `Provenance.render_markdown()` directly). This is
+  your PRISMA methods audit trail -- it includes an explicit
+  **AI-assistance disclosure** that names the specific chatbot used for
+  screening (from the `assist_tool_name` you gave the setup wizard), or
+  states plainly that no AI assistance was used if you left it blank.
+- **`srp/export.py`** -- the BibTeX/RIS field-formatting logic shared by
+  `scripts/export.py` and `slr.py`'s consolidation-menu export step.
+- **`srp/llm_assist.py`** -- the manual-paste prompt builder and reply
+  parser behind `scripts/assist.py` (see above) and `slr.py`'s AI-assist
+  phase step.
+
+None of this needs to be imported directly for the manual `scripts/`
+workflow -- `scripts/export.py` always works CSV-only, and `scripts/assist.py`
+only touches `srp/state.py`'s cross-phase cache if you pass it `--run
+<run-dir>`; without that flag it also works CSV-only.
 
 ---
 
 ## AI-tools integration
+
+This section is about using an LLM to help you **write and read** -- expand
+search terms, draft prose, summarize synthesis findings. That's a different
+job from `scripts/assist.py`'s manual-paste **screening** assist (see
+"Running the pipeline" above): screening-assist needs no account or key and
+writes its output straight into `screening.csv` as a proposed decision for
+the human review gate; the tasks below are open-ended drafting/reading help
+that stays outside the pipeline's CSVs entirely.
 
 ### Where AI fits in the pipeline
 
 | Stage | AI role | Human role |
 |---|---|---|
 | Search-term generation | Expand/suggest synonym blocks from an initial PICOC | Approve every term before it enters a Boolean string; run the actual queries yourself |
-| Title/abstract screening | High-volume first-pass triage against a strict schema | Review every AI decision, especially every "exclude" -- false exclusions are invisible if unchecked |
+| Title/abstract screening | High-volume first-pass triage against a strict schema (via `scripts/assist.py`, manual-paste, no API key) | Review every AI decision, especially every "exclude" -- false exclusions are invisible if unchecked; confirm at the review gate |
 | Data extraction | Populate the fixed schema (Stage 4) from a PDF's text | Spot-check extracted quantitative findings against the source PDF directly, not just plausibility-check the prose |
 | Cross-study synthesis | Draft convergence/conflict summaries from an evidence table you provide | Verify every claimed convergence/conflict against the actual studies; AI tends to over-smooth disagreements into false consensus |
 | Section drafting | Draft prose from an evidence table + outline | Full edit pass; run through a readability/humanizing pass (below) |
 | Readability/humanizing | Rewrite for plain, non-AI-sounding academic prose | Confirm no meaning was altered in the rewrite |
-| Citation verification | Never -- use `verify_citations.py`, not an LLM | Run the DOI-resolution check yourself; treat any mismatch as a hard stop |
+| Citation verification | Never -- use `scripts/verify_citations.py`, not an LLM | Run the DOI-resolution check yourself; treat any mismatch as a hard stop |
 
 ### Tool picks by task
 
@@ -911,9 +1096,9 @@ citation is a content bug wearing a style-edit disguise.
 
 **(g) Citation verification**
 
-Do not use a prompt for this step -- use `verify_citations.py`. An LLM asked
-to verify a citation is itself unreliable for the exact failure mode you're
-trying to catch (see the integrity guardrails below).
+Do not use a prompt for this step -- use `scripts/verify_citations.py`. An LLM
+asked to verify a citation is itself unreliable for the exact failure mode
+you're trying to catch (see the integrity guardrails below).
 
 ### Integrity guardrails
 
@@ -925,14 +1110,16 @@ These are non-negotiable, not best-effort suggestions.
    is a real, documented failure mode in systematic reviews -- not a
    hypothetical. Whether it originates from a human author cutting corners or
    an LLM hallucinating a reference, the mitigation is identical: resolve
-   every DOI/arXiv ID you cite against a real registry (`verify_citations.py`)
+   every DOI/arXiv ID you cite against a real registry (`scripts/verify_citations.py`)
    and confirm title and authors match, before it enters your corpus or your
    own manuscript.
 2. **Keep a human in the loop for every single inclusion/exclusion decision.**
-   AI-assisted triage can propose a decision; it cannot be the decision. This
-   applies at both the title/abstract and full-text stages.
+   AI-assisted triage (`scripts/assist.py` included) can propose a decision;
+   it cannot be the decision. This applies at both the title/abstract and
+   full-text stages -- `slr.py`'s human review gate exists specifically to
+   enforce this in the guided path.
 3. **Verify every downloaded PDF's title page against its expected title
-   before extraction.** Automated resolution (`download.py`) can fetch the
+   before extraction.** Automated resolution (`scripts/download.py`) can fetch the
    wrong file -- a similarly-titled paper, or a landing page mislabeled as a
    PDF. Check the actual PDF, every time, before it enters your extraction
    matrix.
@@ -968,7 +1155,7 @@ These are non-negotiable, not best-effort suggestions.
 - **No-fabrication rules, stated plainly:**
   - Never state a number you have not verified against its source.
   - Never let an LLM-drafted paragraph's citations enter a manuscript without
-    independent DOI verification (`verify_citations.py`).
+    independent DOI verification (`scripts/verify_citations.py`).
   - Never silently drop a discrepancy between two accounting views of the same
     total (e.g., per-round included counts vs. final corpus count) --
     reconcile and state the reconciliation explicitly.
@@ -983,24 +1170,24 @@ These are non-negotiable, not best-effort suggestions.
 - [ ] Boolean query strings drafted for every accessible database, per that
       database's actual syntax
 - [ ] Every query's exact string, filters, and execution date archived
-- [ ] Candidates pulled via `search.py`, unified into one `candidates.csv`
-- [ ] De-duplicated via `dedup.py`: DOI exact match, then fuzzy title match
+- [ ] Candidates pulled via `scripts/search.py`, unified into one `candidates.csv`
+- [ ] De-duplicated via `scripts/dedup.py`: DOI exact match, then fuzzy title match
 - [ ] Two independent reviewers screen title/abstract; Cohen's kappa computed
       before reconciling
 - [ ] Full-text eligibility assessed for everything that survives; every
       downloaded PDF's title page checked against its expected title
 - [ ] Complete screening log kept from the first record, not just included ones
-- [ ] Fixed-schema extraction for every included study (`extract.py` builds
-      the template); quantitative findings copied verbatim with enough
+- [ ] Fixed-schema extraction for every included study (`scripts/extract.py`
+      builds the template); quantitative findings copied verbatim with enough
       context to interpret later
 - [ ] Quality-rubric scoring (R/A/T/C) with a published aggregation formula;
       per-dimension scores released, not just the aggregate tier
 - [ ] Venue tier and quality tier reported as separate axes
 - [ ] Narrative/thematic synthesis by RQ, with explicit convergence/conflict
       assessment; meta-analysis only where studies are genuinely comparable
-- [ ] Every citation DOI-verified via `verify_citations.py` before it enters
-      the manuscript
-- [ ] PRISMA flow diagram (`figures.py`) with a reasoned (not bare)
+- [ ] Every citation DOI-verified via `scripts/verify_citations.py` before it
+      enters the manuscript
+- [ ] PRISMA flow diagram(s) (`scripts/figures.py`) with a reasoned (not bare)
       excluded-count breakdown
 - [ ] PRISMA 2020 checklist graded honestly, gaps disclosed rather than hidden
 - [ ] Data-availability supplement: search strings, screening log, extraction
@@ -1014,9 +1201,10 @@ These are non-negotiable, not best-effort suggestions.
 
 This repository's licensing is split by content type:
 
-- **Code** (`search.py`, `dedup.py`, `screen.py`, `download.py`,
-  `verify_citations.py`, `extract.py`, `figures.py`) is licensed under the
-  **MIT License** -- see [`LICENSE`](LICENSE).
+- **Code** (`slr.py`, `srp/`, and every script under `scripts/` -- `search.py`,
+  `dedup.py`, `screen.py`, `assist.py`, `download.py`, `verify_citations.py`,
+  `extract.py`, `figures.py`, `export.py`) is licensed under the **MIT
+  License** -- see [`LICENSE`](LICENSE).
 - **Documentation** (this README and `examples/README.md`) is licensed under
   **Creative Commons Attribution 4.0 International (CC-BY-4.0)** -- see
   [`LICENSE-docs`](LICENSE-docs). You're free to reuse, adapt, and redistribute

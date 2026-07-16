@@ -256,6 +256,204 @@ def draw_prisma_flow(counts: dict, outdir: Path):
     plt.close(fig)
 
 
+# --- core logic: plotting geometry (official PRISMA 2020 template) ---
+def draw_prisma_2020(counts: dict, outdir: Path):
+    """The full official PRISMA 2020 three-column template (previous studies |
+    new studies via databases & registers | new studies via other methods).
+
+    Boxes sit on a fixed 5-lane x 6-row grid with generous inter-box gaps, and
+    every label is pre-wrapped, so no text overruns its box or a neighbour. The
+    numbers the pipeline actually knows (identified / duplicates / screened /
+    excluded-at-TA / assessed / included) are filled in; the boxes it cannot
+    know -- registers, automation tools, reports-not-retrieved, the
+    previous-version column, and the other-methods column -- are left as
+    "(n =  )" for the reviewer to complete, exactly like the fillable template.
+    A snowball-only review can fill the other-methods column by hand."""
+    from matplotlib.patches import FancyArrowPatch
+
+    LH, PAD, MIN_H = 1.85, 2.4, 4.5
+    BOXFS, HDRFS, FOOTFS = 7.6, 10.0, 6.8
+    PUR_FILL, PUR_EDGE = "#e7e1f3", "#5b4a8a"
+    GRY_FILL, GRY_EDGE = "#e8e8e6", "#7d7d78"
+
+    def hh(text: str) -> float:
+        return max(MIN_H, _n_lines(text) * LH + PAD)
+
+    n_id = counts.get("identified", "")
+    n_dup = counts.get("duplicates_removed", "")
+    n_scr = counts.get("screened", "")
+    n_exta = counts.get("excluded_ta", "")
+    n_ass = counts.get("assessed_ft", "")
+    n_inc = counts.get("included", "")
+
+    reasons = counts.get("ft_reasons") or {}
+    if reasons:
+        rlines = []
+        for reason, n in list(reasons.items())[:3]:
+            short = reason if len(str(reason)) <= 24 else str(reason)[:23].rstrip() + "..."
+            rlines.append(f"{short} (n={n})")
+        ds4 = "Reports excluded:\n" + "\n".join(rlines)
+    else:
+        ds4 = ("Reports excluded:\nReason 1 (n =  )\nReason 2 (n =  )\n"
+               "Reason 3 (n =  ) etc")
+
+    p_box = ("Studies included in\nprevious version of\nreview (n =  )\n\n"
+             "Reports of studies\nincluded in previous\nversion of review\n(n =  )")
+    dm1 = f"Records identified from:\nDatabases (n = {n_id})\nRegisters (n =  )"
+    ds1 = ("Records removed before\nscreening:\nDuplicate records\n"
+           f"removed (n = {n_dup})\nRecords marked ineligible\nby automation tools (n =  )\n"
+           "Records removed for other\nreasons (n =  )")
+    dm2 = f"Records screened\n(n = {n_scr})"
+    ds2 = f"Records excluded\n(n = {n_exta})"
+    dm3 = f"Reports sought for\nretrieval (n = {n_ass})"
+    ds3 = "Reports not retrieved\n(n =  )"
+    dm4 = f"Reports assessed for\neligibility (n = {n_ass})"
+    dm5 = (f"New studies included in\nreview (n = {n_inc})\n"
+           "Reports of new included\nstudies (n =  )")
+    dm6 = (f"Total studies included in\nreview (n = {n_inc})\n"
+           "Reports of total included\nstudies (n =  )")
+    om1 = ("Records identified from:\nWebsites (n =  )\nOrganisations (n =  )\n"
+           "Citation searching (n =  ) etc")
+    om3 = "Reports sought for\nretrieval (n =  )"
+    os3 = "Reports not retrieved\n(n =  )"
+    om4 = "Reports assessed for\neligibility (n =  )"
+    os4 = ("Reports excluded:\nReason 1 (n =  )\nReason 2 (n =  )\n"
+           "Reason 3 (n =  ) etc")
+
+    # 5 lanes (x-centre, width): previous | databases-main | databases-side |
+    # other-main | other-side. Row heights -- and therefore the gaps between
+    # rows -- are computed from the actual box text, so a long exclusion list
+    # just pushes the rows below it further down instead of overlapping them.
+    xP, wP = 9.0, 15.0
+    xDm, wDm = 30.0, 16.0
+    xDs, wDs = 50.0, 17.0
+    xOm, wOm = 72.0, 15.0
+    xOs, wOs = 91.0, 15.0
+    GAP = 4.5             # minimum clearance kept between any row and the next
+    PUR = (PUR_FILL, PUR_EDGE)
+    GRY = (GRY_FILL, GRY_EDGE)
+
+    # each row: (name, cx, w, text, (fill, edge)). Boxes in a row share a top
+    # edge; the row's height is the tallest box in it.
+    rows = [
+        [("p", xP, wP, p_box, GRY), ("dm1", xDm, wDm, dm1, PUR),
+         ("ds1", xDs, wDs, ds1, PUR), ("om1", xOm, wOm, om1, GRY)],
+        [("dm2", xDm, wDm, dm2, PUR), ("ds2", xDs, wDs, ds2, PUR)],
+        [("dm3", xDm, wDm, dm3, PUR), ("ds3", xDs, wDs, ds3, PUR),
+         ("om3", xOm, wOm, om3, GRY), ("os3", xOs, wOs, os3, GRY)],
+        [("dm4", xDm, wDm, dm4, PUR), ("ds4", xDs, wDs, ds4, PUR),
+         ("om4", xOm, wOm, om4, GRY), ("os4", xOs, wOs, os4, GRY)],
+        [("dm5", xDm, wDm, dm5, PUR)],
+        [("dm6", xDm, wDm, dm6, GRY)],
+    ]
+
+    row_h = [max(hh(text) for _, _, _, text, _ in row) for row in rows]
+    total_h = sum(row_h) + GAP * (len(rows) - 1)
+
+    # stack rows downward from the top; every box hangs from its row's top edge
+    pos = {}   # name -> (cx, cy, w, h)
+    y = total_h
+    for row, rh in zip(rows, row_h):
+        for name, cx, w, text, _ in row:
+            h = hh(text)
+            pos[name] = (cx, y - h / 2, w, h)
+        y -= (rh + GAP)
+
+    header_cy = total_h + 4.4
+    title_y = header_cy + 4.4
+    bottom = pos["dm6"][1] - pos["dm6"][3] / 2
+
+    fig, ax = plt.subplots(figsize=(15, max(9.5, total_h * 0.13 + 2.6)), dpi=DPI)
+    ax.set_xlim(0, 100)
+    ax.set_ylim(bottom - 7, title_y + 2)
+    ax.axis("off")
+
+    def draw_box(cx, cy, w, h, text, fill, edge, fs=BOXFS):
+        ax.add_patch(FancyBboxPatch(
+            (cx - w / 2, cy - h / 2), w, h,
+            boxstyle="round,pad=0.02,rounding_size=0.5",
+            facecolor=fill, edgecolor=edge, linewidth=1.2, zorder=2))
+        ax.text(cx, cy, text, ha="center", va="center", fontsize=fs,
+                color=INK, zorder=3, linespacing=1.3)
+
+    def header(cx, w, text, fill):
+        ax.add_patch(FancyBboxPatch(
+            (cx - w / 2, header_cy - 2.4), w, 4.8,
+            boxstyle="round,pad=0.02,rounding_size=0.5",
+            facecolor=fill, edgecolor=fill, linewidth=0, zorder=2))
+        ax.text(cx, header_cy, text, ha="center", va="center", fontsize=HDRFS,
+                color="white", fontweight="bold", zorder=3, linespacing=1.15)
+
+    def vconn(a, b):   # vertical arrow: bottom of a -> top of b (same lane)
+        cxa, cya, _, ha_ = pos[a]
+        _, cyb, _, hb = pos[b]
+        ax.annotate("", xy=(cxa, cyb + hb / 2), xytext=(cxa, cya - ha_ / 2),
+                    arrowprops=dict(arrowstyle="-|>", color=INK_SECONDARY, lw=1.2,
+                                    shrinkA=0, shrinkB=0), zorder=1)
+
+    def hconn(a, b):   # horizontal arrow: right of main a -> left of side b
+        cxa, cya, wa, _ = pos[a]
+        cxb, _, wb, _ = pos[b]
+        ax.annotate("", xy=(cxb - wb / 2, cya), xytext=(cxa + wa / 2, cya),
+                    arrowprops=dict(arrowstyle="-|>", color=INK_SECONDARY, lw=1.2,
+                                    shrinkA=0, shrinkB=0), zorder=1)
+
+    def elbow(a, tx, ty, angle_b):   # right-angle arrow from bottom of a to (tx,ty)
+        cxa, cya, _, ha_ = pos[a]
+        ax.add_patch(FancyArrowPatch(
+            (cxa, cya - ha_ / 2), (tx, ty),
+            connectionstyle=f"angle,angleA=-90,angleB={angle_b},rad=0",
+            arrowstyle="-|>", mutation_scale=12, color=INK_SECONDARY,
+            lw=1.2, zorder=1))
+
+    # column headers
+    header(xP, wP, "Previous studies", GRY_EDGE)
+    header(40.25, 36.5, "Identification of new studies via\ndatabases and registers", PUR_EDGE)
+    header(81.5, 34.0, "Identification of new studies via\nother methods", GRY_EDGE)
+
+    # boxes
+    for row in rows:
+        for name, cx, w, text, (fill, edge) in row:
+            _, cy, _, h = pos[name]
+            draw_box(cx, cy, w, h, text, fill, edge)
+
+    # databases lane: vertical flow
+    for a, b in [("dm1", "dm2"), ("dm2", "dm3"), ("dm3", "dm4"),
+                 ("dm4", "dm5"), ("dm5", "dm6")]:
+        vconn(a, b)
+    # other-methods lane: vertical flow (no screening row)
+    vconn("om1", "om3")
+    vconn("om3", "om4")
+    # main -> side (removed / excluded / not-retrieved)
+    for a, b in [("dm1", "ds1"), ("dm2", "ds2"), ("dm3", "ds3"),
+                 ("dm4", "ds4"), ("om3", "os3"), ("om4", "os4")]:
+        hconn(a, b)
+    # elbow: other-methods "assessed" feeds into "new studies included"
+    dm5c = pos["dm5"]
+    elbow("om4", dm5c[0] + dm5c[2] / 2, dm5c[1], 0)
+    # elbow: previous studies feed into "total studies included"
+    dm6c = pos["dm6"]
+    elbow("p", dm6c[0] - dm6c[2] / 2, dm6c[1], 180)
+
+    foot = (
+        "*Consider, if feasible to do so, reporting the number of records identified from each\n"
+        " database or register searched (rather than the total number across all databases/registers).\n"
+        "†If automation tools were used, indicate how many records were excluded by a human\n"
+        " and how many were excluded by automation tools."
+    )
+    # anchor the footnotes just below the "new studies included" box's bottom
+    # edge, so the incoming other-methods arrow (which runs at that box's centre)
+    # never crosses the text.
+    ax.text(41.0, pos["dm5"][1] - pos["dm5"][3] / 2 - 1.5, foot, ha="left",
+            va="top", fontsize=FOOTFS, color=INK_SECONDARY, linespacing=1.4)
+    ax.text(50, title_y, "PRISMA 2020 flow diagram", ha="center", va="center",
+            fontsize=13, color=INK, fontweight="bold")
+
+    fig.savefig(outdir / "prisma_2020.png", dpi=DPI, bbox_inches="tight")
+    fig.savefig(outdir / "prisma_2020.pdf", bbox_inches="tight")
+    plt.close(fig)
+
+
 def _wrap(text: str, width: int = 30) -> str:
     import textwrap
     return "\n".join(textwrap.wrap(text, width=width))
@@ -408,6 +606,9 @@ def main():
 
     draw_prisma_flow(counts, outdir)
     print(f"wrote {outdir / 'prisma_flow.png'} and {outdir / 'prisma_flow.pdf'}")
+
+    draw_prisma_2020(counts, outdir)
+    print(f"wrote {outdir / 'prisma_2020.png'} and {outdir / 'prisma_2020.pdf'}")
 
     n_q, q_counts = draw_quality_tiers(quality, outdir)
     print(f"quality-tier counts (n={n_q}): {q_counts} "

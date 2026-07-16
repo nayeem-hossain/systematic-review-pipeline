@@ -9,7 +9,11 @@ venv/
 # environment
 .env
 
-# NOTE: output/ and pdfs/ are intentionally committed in this repo as a live
-# demonstration run (real ML-IDS search results + downloaded open-access PDFs).
-# If you fork this for a real review, delete them and regenerate your own with
-# the pipeline scripts.
+# review run workspaces created by slr.py (real user data -- keep out of the repo)
+runs/
+
+# A real run writes output/ and pdfs/ into the working directory -- keep them out
+# of git. The committed demonstration run lives under examples/demo_output/ and
+# examples/demo_pdfs/ instead.
+output/
+pdfs/

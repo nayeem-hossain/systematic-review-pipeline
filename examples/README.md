@@ -2,8 +2,9 @@
 
 This directory holds a small, curated sample of real output from one end-to-end
 run of the pipeline, so you can see the CSV and figure shapes without having to
-run the scripts yourself first. `output/` and `pdfs/` hold the full,
-un-curated run this sample is drawn from.
+run the scripts yourself first. `demo_output/` and `demo_pdfs/` hold the full,
+un-curated run this sample is drawn from -- a completed demonstration run
+(the CSV outputs and downloaded open-access PDFs from the ML-IDS example).
 
 The worked example domain is machine-learning / AI-based intrusion detection
 systems (ML-IDS) -- see the README's "Worked example" section for the full
@@ -15,7 +16,7 @@ Boolean query strings this run's search term is drawn from.
 pip install -r requirements.txt
 
 # 1. Search four APIs for a small ML-IDS query, capped at 30 records/source
-python search.py \
+python scripts/search.py \
     --query "intrusion detection AND machine learning" \
     --year-from 2020 --year-to 2026 \
     --mailto <your real email> \
@@ -28,7 +29,7 @@ python search.py \
 #    or pass --s2-api-key, to include Semantic Scholar.
 
 # 2. De-duplicate by DOI, then fuzzy title match
-python dedup.py --in output/candidates.csv --out output/candidates_dedup.csv \
+python scripts/dedup.py --in output/candidates.csv --out output/candidates_dedup.csv \
     --title-threshold 92
 # -> 90 in, 0 flagged duplicate, 90 unique. This particular 90-record sample
 #    happened to have no cross-source overlap (each API's top results for this
@@ -37,18 +38,18 @@ python dedup.py --in output/candidates.csv --out output/candidates_dedup.csv \
 #    where the same paper is indexed by more than one source.
 
 # 3. Build the screening spreadsheet
-python screen.py --in output/candidates_dedup.csv --out output/screening.csv
+python scripts/screen.py --in output/candidates_dedup.csv --out output/screening.csv
 # -> 90 rows, decisions blank for a human reviewer to fill in.
 
 # 4. Resolve and download open-access PDFs
-python download.py --in output/candidates_dedup.csv --mailto <your real email> \
+python scripts/download.py --in output/candidates_dedup.csv --mailto <your real email> \
     --outdir pdfs --max-downloads 6
 # -> 6/12 downloaded (6 arXiv preprints via direct link, plus -- after retrying
 #    with a genuinely deliverable email address, see the gotcha below -- 6 more
 #    IEEE Access / Springer gold-OA papers via Unpaywall).
 
 # 5. Verify 10 citations against Crossref (fabricated-citation guard)
-python verify_citations.py --csv output/candidates_dedup.csv \
+python scripts/verify_citations.py --csv output/candidates_dedup.csv \
     --doi-col doi --title-col title --limit 10 \
     --out output/citation_verification.csv
 # -> 10/10 passed: every claimed title matches what its DOI actually resolves
@@ -57,7 +58,7 @@ python verify_citations.py --csv output/candidates_dedup.csv \
 
 ## The extraction + figures demo (screening_decided_sample.csv onward)
 
-`screening_sample.csv` above (and the real `output/screening.csv`) ship with
+`screening_sample.csv` above (and the real `demo_output/screening.csv`) ship with
 every decision column blank, by design -- `screen.py` never fills them in,
 a human does. To demonstrate what `extract.py` and `figures.py` produce once
 that human step has happened, this directory also carries a second, decided
@@ -77,7 +78,7 @@ pipeline):
 #       ft_reason columns for the specific call made on each.
 
 # 7. Build the extraction template from the decided screening sheet
-python extract.py --in examples/screening_decided_sample.csv \
+python scripts/extract.py --in examples/screening_decided_sample.csv \
     --candidates examples/candidates_dedup_sample.csv \
     --out /tmp/extraction_template.csv
 # -> 15 rows marked include in 'ft_decision'; template columns
@@ -87,7 +88,7 @@ python extract.py --in examples/screening_decided_sample.csv \
 #    a reviewer has filled it in for all 15 included studies.
 
 # 8. Render the PRISMA flow diagram + quality-/venue-tier charts
-python figures.py \
+python scripts/figures.py \
     --screening examples/screening_decided_sample.csv \
     --dedup examples/candidates_dedup_sample.csv \
     --candidates examples/candidates_sample.csv \
@@ -117,14 +118,14 @@ Unpaywall path to work -- not a `user@example.com`-style placeholder.
 
 | File | Rows | What it is |
 |---|---:|---|
-| `candidates_sample.csv` | 21 | A stratified slice of `output/candidates.csv` (7 OpenAlex + 7 Crossref + 7 arXiv records, by id range) |
+| `candidates_sample.csv` | 21 | A stratified slice of `demo_output/candidates.csv` (7 OpenAlex + 7 Crossref + 7 arXiv records, by id range) |
 | `candidates_dedup_sample.csv` | 21 | The same 21 records after `dedup.py`, with `doi_norm`/`title_norm`/`duplicate_of`/`dedup_method` columns added |
 | `screening_sample.csv` | 21 | The same 21 records as blank screening rows (`screen.py` output) |
 | `screening_decided_sample.csv` | 21 | `screening_sample.csv` with `ta_decision`/`ta_reason`/`ft_decision`/`ft_reason` filled in -- 18 included at title/abstract, 15 of those included at full text |
 | `quality_scored_sample.csv` | 15 | `extract.py`'s template, filled in for all 15 full-text-included studies (`thematic_class`, `study_type`, `contribution`, `key_findings`, `rq_mapping`, `limitations`, `venue_tier`, `R`/`A`/`T`/`C`, `quality_tier`) |
 | `download_log_sample.csv` | 12 | The full `download.py` log from this run (ids 1-12; already small enough to include in full) |
 | `citation_verification_sample.csv` | 10 | The full `verify_citations.py` output from this run (10/10 DOIs passed) |
-| `figures/` | 3 figures | `prisma_flow`, `quality_tiers`, `venue_tiers` -- each as `.png` (300 dpi) + `.pdf`, rendered by `figures.py` from `screening_decided_sample.csv` and `quality_scored_sample.csv` (see command #8 above) |
+| `figures/` | 4 figures | `prisma_flow`, `prisma_2020` (official three-column PRISMA 2020 template), `quality_tiers`, `venue_tiers` -- each as `.png` (300 dpi) + `.pdf`, rendered by `scripts/figures.py` from `screening_decided_sample.csv` and `quality_scored_sample.csv` (see command #8 above) |
 
 Note one intentionally-left-in artifact in `candidates_sample.csv`: record 64
 ("A Benchmark Study of Machine Learning Models for Online Fake News
