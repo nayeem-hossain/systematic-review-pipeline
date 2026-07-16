@@ -1,0 +1,13 @@
+id,doi,oa_status,method,saved_path
+1,10.1002/ett.4150,"failed: http 403, content-type text/html; charset=utf-8",unpaywall,
+2,10.1007/s42979-021-00592-x,"failed: http 200, content-type text/html; charset=utf-8",unpaywall,
+3,10.38094/jastt20165,"failed: http 403, content-type text/html; charset=utf-8",unpaywall,
+4,10.1109/access.2021.3083060,downloaded,unpaywall,pdfs\4.pdf
+5,10.1016/j.procs.2020.04.133,"failed: http 200, content-type text/html;charset=utf-8",unpaywall,
+6,10.1109/access.2020.2988359,downloaded,unpaywall,pdfs\6.pdf
+7,10.1109/access.2021.3056614,downloaded,unpaywall,pdfs\7.pdf
+8,10.1109/comst.2022.3233793,no_oa_url_found,unpaywall,
+9,10.1007/978-3-030-72802-1_9,downloaded,unpaywall,pdfs\9.pdf
+10,10.1016/j.comnet.2021.107840,no_oa_url_found,unpaywall,
+11,10.1007/s10915-022-01939-z,downloaded,unpaywall,pdfs\11.pdf
+12,10.1109/access.2020.3048415,downloaded,unpaywall,pdfs\12.pdf

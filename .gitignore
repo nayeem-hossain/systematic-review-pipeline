@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# environment
+.env
+
+# NOTE: output/ and pdfs/ are intentionally committed in this repo as a live
+# demonstration run (real ML-IDS search results + downloaded open-access PDFs).
+# If you fork this for a real review, delete them and regenerate your own with
+# the pipeline scripts.

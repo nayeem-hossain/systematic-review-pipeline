@@ -1,0 +1,22 @@
+id,title,year,venue,doi,ta_decision,ta_reason,ft_decision,ft_reason,round,reviewer
+1,Network intrusion detection system: A systematic study of machine learning and deep learning approaches,2020.0,Transactions on Emerging Telecommunications Technologies,10.1002/ett.4150,include,,include,,openalex,MNH
+2,"Machine Learning: Algorithms, Real-World Applications and Research Directions",2021.0,SN Computer Science,10.1007/s42979-021-00592-x,exclude,"General ML survey with no IDS-specific framing (PICOC Intervention scope, not Population) -- excluded per protocol",,,openalex,MNH
+3,Classification Based on Decision Tree Algorithm for Machine Learning,2021.0,Journal of Applied Science and Technology Trends,10.38094/jastt20165,exclude,"Decision-tree tutorial/algorithm paper, no network-intrusion application discussed -- excluded per protocol",,,openalex,MNH
+4,Machine Learning for Anomaly Detection: A Systematic Review,2021.0,IEEE Access,10.1109/access.2021.3083060,include,,include,,openalex,MNH
+5,Performance Analysis of Machine Learning Algorithms in Intrusion Detection System: A Review,2020.0,Procedia Computer Science,10.1016/j.procs.2020.04.133,include,,include,,openalex,MNH
+6,An Explainable Machine Learning Framework for Intrusion Detection Systems,2020.0,IEEE Access,10.1109/access.2020.2988359,include,,include,,openalex,MNH
+7,Benchmarking of Machine Learning for Anomaly Based Intrusion Detection Systems in the CICIDS2017 Dataset,2021.0,IEEE Access,10.1109/access.2021.3056614,include,,include,,openalex,MNH
+31,How Machine Learning is Revolutionizing Intrusion Detection,2020.0,Designing a Machine Learning Intrusion Detection System,10.1007/978-1-4842-6591-8_2,include,,include,,crossref,MNH
+32,Machine Learning for Intrusion Detection,2025.0,Deep Learning for Intrusion Detection,10.1002/9781394285198.ch2,include,,include,,crossref,MNH
+33,Intrusion Detection Systems based on Machine Learning,2021.0,"Proceedings of the 2nd International Conference on Big Data, Modelling and Machine Learning",10.5220/0010734300003101,include,,include,,crossref,MNH
+34,Machine Learning for Intrusion Detection,2026.0,CyberSentinel+,10.1201/9781003660361-5,include,,exclude,"Full text substantially duplicates study 32's scope and framing ('ML for Intrusion Detection' book-chapter overview); retained 32, excluded 34 to avoid double-counting the same contribution",crossref,MNH
+35,Trustable machine learning for intrusion detection systems,,,10.70675/e2fe5f32z19e5z41caz9b55z7b33b874c3c0,include,,include,,crossref,MNH
+36,Intrusion Detection using Machine Learning,2022.0,International Journal of Science and Research (IJSR),10.21275/mr22310165547,include,,include,,crossref,MNH
+37,Evaluation of Machine Learning Method for Intrusion Detection System on Jubatus,2015.0,International Journal of Machine Learning and Computing,10.7763/ijmlc.2015.v5.497,include,,exclude,2015 conference paper on a niche platform (Jubatus); dataset and methodology reporting insufficient for quality assessment at full-text stage,crossref,MNH
+61,A Hybrid Deep Learning Anomaly Detection Framework for Intrusion Detection,2022.0,arXiv,10.48550/arXiv.2212.00966,include,,include,,arxiv,MNH
+62,Tree-based Intelligent Intrusion Detection System in Internet of Vehicles,2019.0,arXiv,10.48550/arXiv.1910.08635,include,,include,,arxiv,MNH
+63,Cyber Situation Awareness with Active Learning for Intrusion Detection,2019.0,arXiv,10.48550/arXiv.1912.12673,include,,include,,arxiv,MNH
+64,A Benchmark Study of Machine Learning Models for Online Fake News Detection,2019.0,arXiv,10.48550/arXiv.1905.04749,exclude,"Off-topic: fake-news detection, not network intrusion detection or an adjacent security task",,,arxiv,MNH
+65,Performance Comparison of Intrusion Detection Systems and Application of Machine Learning to Snort System,2017.0,arXiv,10.48550/arXiv.1710.04843,include,,include,,arxiv,MNH
+66,Online Feature Ranking for Intrusion Detection Systems,2018.0,arXiv,10.48550/arXiv.1803.00530,include,,exclude,"Narrow scope (online feature ranking only, not a full IDS pipeline evaluation) -- insufficient evidence for RQ2/RQ3",arxiv,MNH
+67,LCCDE: A Decision-Based Ensemble Framework for Intrusion Detection in The Internet of Vehicles,2022.0,arXiv,10.48550/arXiv.2208.03399,include,,include,,arxiv,MNH
