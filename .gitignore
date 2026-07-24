@@ -17,3 +17,7 @@ runs/
 # examples/demo_pdfs/ instead.
 output/
 pdfs/
+
+# Playwright MCP tool session artifacts (console logs, page snapshots) -- not
+# project source.
+.playwright-mcp/
