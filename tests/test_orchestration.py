@@ -8,6 +8,7 @@ being reported as a pass, a corrupt file being laundered into an authoritative
 something is *refused* or *reported* rather than defaulted.
 """
 import io
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -432,3 +433,35 @@ class TestReviewGatePreviewBeforeFlip:
         slr.run_review_gate(st, cfg, prov, 1, pdir, console)
 
         assert "999" in console.file.getvalue()
+
+
+class TestMainHandlesCorruptCsv:
+    """_read_csv_safe() raises CorruptCsvError for a genuinely unreadable CSV
+    (as opposed to missing/empty/header-only, which are legitimate and return
+    an empty frame) -- but nothing previously caught it anywhere in slr.py, so
+    it propagated as an unhandled traceback instead of a clean message. main()
+    is the single top-level entry point every guided-TUI code path runs
+    through, so it's the one place this needs to be caught."""
+
+    def test_corrupt_csv_error_is_caught_with_a_clean_message_not_a_traceback(
+            self, tmp_path, monkeypatch, capsys):
+        def boom(runs_dir, console, preselect_run=None):
+            raise slr.CorruptCsvError("runs/x/phase_1/screening.csv could not be parsed: boom")
+
+        monkeypatch.setattr(slr, "main_interactive", boom)
+        monkeypatch.setattr(sys, "argv", ["slr.py", "--runs-dir", str(tmp_path)])
+
+        code = slr.main()
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "corrupt" in out.lower()
+        assert "screening.csv" in out
+
+    def test_exit_code_is_distinct_from_keyboard_interrupt(self, tmp_path, monkeypatch):
+        def boom(runs_dir, console, preselect_run=None):
+            raise slr.CorruptCsvError("bad file")
+
+        monkeypatch.setattr(slr, "main_interactive", boom)
+        monkeypatch.setattr(sys, "argv", ["slr.py", "--runs-dir", str(tmp_path)])
+        assert slr.main() != 130  # 130 is KeyboardInterrupt's code, not this error's

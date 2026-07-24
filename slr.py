@@ -2105,6 +2105,13 @@ def main() -> int:
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/]")
         return 130
+    except CorruptCsvError as e:
+        console.print(Panel(
+            str(e), title="[red]A pipeline CSV is corrupt or unreadable[/]",
+            border_style="red"))
+        console.print("[yellow]Fix or remove the file named above, then resume this run "
+                      "(`python slr.py --run <run-id>`).[/]")
+        return 1
     return 0
 
 

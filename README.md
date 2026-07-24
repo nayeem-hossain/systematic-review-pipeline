@@ -49,6 +49,12 @@ checkpoints. Every review lives under its own `runs/<run-id>/` workspace
 (gitignored -- see [The srp/ library](#the-srp-library-config-state-provenance-export)
 below).
 
+A pipeline CSV that exists but can't actually be parsed (truncated mid-write,
+saved with the wrong encoding) is never treated as if it were simply missing
+or empty -- it stops the wizard with a clear message naming the file, instead
+of silently reporting "0 records" for a stage that actually failed to read
+its input. Fix or remove the named file, then resume the run.
+
 ```bash
 python slr.py
 ```
