@@ -1,0 +1,22 @@
+name: tests
+
+# Runs the pytest suite on every push/PR. This is here mainly so a green badge
+# demonstrates the tests pass on a clean machine, not your own -- for a solo
+# project run locally, `python -m pytest tests/` gives you the same signal
+# faster. No lint/type-check/coverage gates: this project's dependency list and
+# test suite are the reproducibility surface that matters; a linter is not.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.lock pytest
+      - run: python -m pytest tests/ -v

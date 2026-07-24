@@ -26,22 +26,25 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import srp.export
+from srp.decisions import pick_progressed
 
 RECORD_COLUMNS = ["id", "title", "authors", "year", "venue", "doi"]
 
 
 def filter_included(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only rows marked 'include': ft_decision if present, else
-    ta_decision, else all rows (with a printed note)."""
-    if "ft_decision" in df.columns:
-        col = "ft_decision"
-    elif "ta_decision" in df.columns:
-        col = "ta_decision"
-    else:
+    """Keep only rows that have progressed: ft_decision == include if that
+    column has any values, else ta_decision in {include, maybe}, else all rows.
+
+    Used to prefer ft_decision merely because the COLUMN EXISTED, even if it
+    was entirely blank -- the normal state before full-text screening has run.
+    That silently exported zero rows instead of falling back to ta_decision on
+    exactly the input extract.py's equivalent fallback handled correctly.
+    """
+    if "ft_decision" not in df.columns and "ta_decision" not in df.columns:
         print("note: no ft_decision or ta_decision column found -- exporting all rows")
         return df
-    decisions = df[col].fillna("").astype(str).str.strip().str.lower()
-    return df[decisions.eq("include")]
+    filtered, _col = pick_progressed(df, "ft_decision")
+    return filtered
 
 
 def build_records(df: pd.DataFrame) -> list[dict]:

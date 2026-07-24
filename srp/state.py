@@ -6,50 +6,55 @@ append-only decisions log that doubles as a cross-phase "already judged" cache.
 from __future__ import annotations
 
 import json
-import re
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+from srp.normalize import normalize_doi, normalize_title, record_key
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# normalization must match the repo's dedup.py:
-# --- core logic ---
-def normalize_doi(doi) -> str:
-    if not doi or str(doi).lower() == "nan":
-        return ""
-    s = str(doi).strip().lower()
-    for prefix in (
-        "https://doi.org/",
-        "http://doi.org/",
-        "https://dx.doi.org/",
-        "http://dx.doi.org/",
-        "doi.org/",
-    ):
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-            break
-    return s.strip()
+def _write_json_atomic(path: Path, payload) -> None:
+    """Write JSON so an interrupted save can never destroy the previous file.
+
+    state.json is rewritten on every mark_stage, i.e. many times across a
+    multi-hour run. The old code opened it "w" (truncating immediately) and then
+    streamed json.dump into it, so a Ctrl-C or crash in that window left
+    truncated JSON -- and RunState.load has no error handling, so the next resume
+    died with a JSONDecodeError and the run's entire checkpoint history was gone
+    with no recovery path.
+
+    Writing to a temp file in the same directory and then os.replace() makes the
+    swap atomic on both NTFS and POSIX: readers see either the old file or the new
+    one, never a half-written one.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # BaseException, not Exception: a KeyboardInterrupt here must still clean
+        # up the temp file rather than litter the run directory.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
-def normalize_title(t) -> str:
-    if not t:
-        return ""
-    s = str(t).lower()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
-
-
-def record_key(doi, title) -> str:
-    k = normalize_doi(doi)
-    if k:
-        return "doi:" + k
-    t = normalize_title(title)
-    if t:
-        return "title:" + t
-    return ""
+# normalize_doi / normalize_title / record_key now live in srp/normalize.py, which
+# scripts/dedup.py imports too -- see that module for why sharing them matters.
+# Re-exported here so `from srp.state import record_key` keeps working.
+__all__ = ["normalize_doi", "normalize_title", "record_key", "RunState"]
 
 
 class RunState:
@@ -65,8 +70,7 @@ class RunState:
         run_dir = Path(base_dir) / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(run_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
+        _write_json_atomic(run_dir / "config.json", config)
 
         state = {
             "run_id": run_id,
@@ -74,8 +78,7 @@ class RunState:
             "stages": {},
             "current_phase": 1,
         }
-        with open(run_dir / "state.json", "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        _write_json_atomic(run_dir / "state.json", state)
 
         (run_dir / "decisions.jsonl").touch()
 
@@ -183,5 +186,4 @@ class RunState:
         return result
 
     def save(self) -> None:
-        with open(self.run_dir / "state.json", "w", encoding="utf-8") as f:
-            json.dump(self.state, f, indent=2)
+        _write_json_atomic(self.run_dir / "state.json", self.state)

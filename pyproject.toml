@@ -1,0 +1,31 @@
+[project]
+name = "systematic-review-pipeline"
+version = "0.1.0"
+description = "A guided, auditable systematic-literature-review pipeline: search, dedup, screen, extract, appraise, and report against PRISMA 2020."
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.0",
+    "rapidfuzz>=3.6",
+    "matplotlib>=3.6",
+    "questionary>=2.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+# No [project.scripts] entry points: the README documents `python slr.py` and
+# `python scripts/<stage>.py` directly, and that is how this project is meant to
+# be read and run -- each stage script is designed to be opened and understood,
+# not hidden behind an installed console command.
+
+[tool.setuptools]
+packages = ["srp"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

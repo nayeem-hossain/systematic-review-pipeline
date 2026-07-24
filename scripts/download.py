@@ -54,6 +54,11 @@ from typing import Optional
 import pandas as pd
 import requests
 
+# make the repo root importable so `srp` resolves when run as `python scripts/download.py`
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from srp.env import load_dotenv
+
 POLITE_DELAY_SECS = 1.5
 KNOWN_SOURCES = ["arxiv", "unpaywall", "openalex", "semanticscholar", "core"]
 
@@ -146,19 +151,49 @@ def core_pdf_url(doi: str, title: str, api_key: Optional[str]) -> Optional[str]:
     return first.get("downloadUrl") or first.get("fullTextIdentifier")
 
 
-def download(url: str, dest: Path, mailto: str) -> tuple[bool, str]:
+# Generous for any article; small enough that a misresolved DOI pointing at a
+# multi-GB dataset or a scanned-volume PDF cannot quietly fill the disk during an
+# unattended 200-record run. `timeout` is a per-read timeout, not a total-transfer
+# budget, so without a cap a slow trickle can stream indefinitely.
+MAX_PDF_BYTES = 100 * 1024 * 1024
+
+
+def download(url: str, dest: Path, mailto: str,
+              max_bytes: int = MAX_PDF_BYTES) -> tuple[bool, str]:
+    """Fetch one PDF. Writes to a .part file and renames only on success, so an
+    interrupted or oversized download never leaves a truncated file sitting at the
+    final path looking like a complete article."""
+    tmp = dest.with_suffix(dest.suffix + ".part")
     try:
         headers = {"User-Agent": f"systematic-review-pipeline/1.0 (mailto:{mailto})"}
         r = requests.get(url, headers=headers, timeout=60, stream=True)
         content_type = r.headers.get("Content-Type", "").lower()
         if r.status_code != 200 or "pdf" not in content_type:
             return False, f"http {r.status_code}, content-type {content_type or 'unknown'}"
-        with open(dest, "wb") as f:
+
+        declared = r.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > max_bytes:
+            return False, f"too large: {int(declared)} bytes > {max_bytes} cap"
+
+        written = 0
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "wb") as f:
             for chunk in r.iter_content(8192):
+                written += len(chunk)
+                if written > max_bytes:
+                    return False, f"too large: exceeded {max_bytes} byte cap mid-download"
                 f.write(chunk)
+        os.replace(tmp, dest)
         return True, "ok"
     except requests.RequestException as e:
         return False, str(e)
+    finally:
+        # Covers the size-cap returns above and KeyboardInterrupt mid-stream.
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def resolve_source_order(raw: str) -> list:
@@ -176,6 +211,10 @@ def resolve_source_order(raw: str) -> list:
 
 
 def main():
+    # Must precede add_argument -- the flags below resolve their defaults from
+    # os.environ at definition time.
+    load_dotenv()
+
     ap = argparse.ArgumentParser(
         description="Resolve and download open-access PDFs for deduped candidates "
                      "via arXiv direct links, Unpaywall, OpenAlex, Semantic Scholar, and CORE.")
@@ -192,6 +231,12 @@ def main():
     ap.add_argument("--report", default="output/manual_download_needed.csv",
                      help="Path for the CSV listing records with no OA PDF found "
                           "(for manual retrieval)")
+    ap.add_argument("--log", default="output/download_log.csv",
+                     help="Path for the per-record download log (id, doi, oa_status, "
+                          "method, saved_path). This is the only record of which OA "
+                          "source each PDF came from, so a real run should point it "
+                          "inside the run workspace rather than let every run "
+                          "overwrite the same file.")
     ap.add_argument("--sources", default="arxiv,unpaywall,openalex,semanticscholar,core",
                      help="Comma-separated OA sources to try, in order")
     args = ap.parse_args()
@@ -272,7 +317,7 @@ def main():
         time.sleep(POLITE_DELAY_SECS)  # be polite to publisher/arXiv servers
 
     log = pd.DataFrame(log_rows, columns=["id", "doi", "oa_status", "method", "saved_path"])
-    log_path = Path("output/download_log.csv")
+    log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log.to_csv(log_path, index=False, encoding="utf-8")
 

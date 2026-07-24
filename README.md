@@ -21,14 +21,27 @@ pipeline and the method don't change.
 
 An interactive terminal (needs `questionary` + `rich`, see [Running the
 pipeline](#running-the-pipeline) below) that walks you through a setup wizard
--- topic, keywords, year range, contact email, optional Semantic Scholar /
-CORE API keys, which sources to search, how many snowball phases, which web
-chatbot you'll paste screening prompts into, your reviewer name -- then runs
-each phase for you: search -> dedup -> prescreen skeleton -> manual-paste
-AI-assist screening -> human review gate -> snowball into the next phase.
-Once every phase is done it opens a consolidation menu: merge included
-studies across phases, download PDFs, verify citations, build the extraction
-sheet, generate figures, export references, and write the provenance report.
+-- topic, keywords, eligibility criteria, year range, contact email, optional
+API keys, which sources to search, how many search phases, which web chatbot
+you'll paste screening prompts into, your reviewer name -- then runs each phase
+for you: search -> dedup -> prescreen skeleton -> manual-paste AI-assist
+screening -> human review gate -> query expansion into the next phase.
+Once every phase is done it opens a consolidation menu: merge TA-included
+studies across phases, run **citation snowballing** (backward + forward,
+Wohlin 2014) and merge its results in, download PDFs, **full-text screening**,
+verify citations, build the extraction sheet, generate figures, export
+references, export full-text exclusions with reasons, compute **inter-rater
+agreement**, draft the search-methods paragraph, write a review
+self-appraisal checklist, and write the provenance report.
+
+> **Terminology:** the between-phase step is **query expansion** -- it suggests
+> extra keywords drawn from the terms frequent in your included titles. It is not
+> citation snowballing (Wohlin 2014), which walks the reference/citation graph.
+> The two are not interchangeable: snowballing exists to escape your search
+> string's keyword bias, whereas expanding the query with words you already found
+> narrows toward that same vocabulary. If your protocol promises snowballing, use
+> the consolidation menu's **Citation snowballing** action (or `scripts/snowball.py`
+> directly in the manual path) and record it as a separate identification method.
 
 It is **resumable**: re-run `python slr.py`, choose "Resume an existing
 review," and it fast-forwards past every already-completed stage using saved
@@ -55,9 +68,10 @@ cd systematic-review-pipeline
 
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.lock     # exact pins; requirements.txt = minimums
 
-cp .env.example .env                 # fill in a real MAILTO address
+cp .env.example .env                 # fill in a real MAILTO; add any API keys here
+                                     # (loaded automatically; flags override it)
 
 python scripts/search.py \
     --query '"intrusion detection" AND "machine learning"' \
@@ -89,6 +103,21 @@ python scripts/export.py --in output/extraction.csv --out-bib references.bib \
     --out-ris references.ris --included-only
 ```
 
+### Tests
+
+```bash
+pip install pytest
+python -m pytest tests/
+```
+
+The suite covers the functions whose silent breakage would put a wrong number in
+a published paper: deduplication in both directions (false merges *and* missed
+preprint/published pairs), the PRISMA count derivation and its cross-phase
+totals, the chatbot-reply parser's refusal to fabricate or misattribute a
+decision, BibTeX key collisions, Cohen's kappa against its textbook worked
+example, and the guarantee that API keys never reach `runs/<id>/config.json`.
+Run it after changing anything under `srp/` or `scripts/`.
+
 A real run of either path writes `output/` and `pdfs/` (manual path) or
 `runs/<run-id>/` (guided path) into your working directory -- both are
 gitignored. This repository ships with a **committed demonstration run**
@@ -116,7 +145,7 @@ alone unless you're deliberately extending the tool). You should not need to
 edit anything below either marker for a normal review. `slr.py` and the
 `srp/` library follow the same two markers for the same reason -- the wizard
 prompts and consolidation menu are what you interact with; the phase
-orchestration and snowball logic underneath are marked `# --- core logic ---`
+orchestration and query-expansion logic underneath are marked `# --- core logic ---`
 and don't need touching for a normal review either.
 
 ## Repository layout
@@ -124,24 +153,40 @@ and don't need touching for a normal review either.
 ```
 systematic-review-pipeline/
 ├── slr.py                  # guided interactive entry point (run this)
-├── srp/                     # importable library: config, state, provenance, llm_assist, export
+├── srp/                     # importable library
+│   ├── config.py             # ReviewConfig (secrets are never persisted)
+│   ├── env.py                  # .env loader
+│   ├── normalize.py             # THE definition of "same DOI" / "same title"
+│   ├── state.py                   # run workspace, atomic checkpoints, decision log
+│   ├── decisions.py                 # the single AI-decision ingestion path
+│   ├── agreement.py                   # Cohen's kappa + conflict lists
+│   ├── appraisal.py                     # field -> critical-appraisal instrument registry
+│   ├── methods_report.py                  # auto-draft the search-methods paragraph
+│   ├── llm_assist.py                        # screening prompt builder + reply parser
+│   ├── provenance.py                          # append-only log + PROVENANCE.md
+│   └── export.py                                # BibTeX / RIS
+├── tests/                   # pytest suite (`python -m pytest tests/`)
 ├── scripts/                  # the individual stage CLIs (manual / advanced use)
-│   ├── search.py               # query OpenAlex, Semantic Scholar, Crossref, arXiv
-│   ├── dedup.py                  # DOI-exact then fuzzy-title deduplication
+│   ├── search.py               # query up to 10 scholarly APIs
+│   ├── dedup.py                  # DOI-exact then fuzzy-title+author deduplication
 │   ├── screen.py                   # build the title/abstract + full-text screening sheet
 │   ├── assist.py                     # manual-paste AI-assist screening (build prompt / parse reply)
-│   ├── download.py                     # resolve + fetch open-access PDFs (arXiv, Unpaywall, OpenAlex, S2, CORE)
-│   ├── verify_citations.py               # fabricated-citation guard: DOI -> Crossref -> diff
-│   ├── extract.py                          # build the Stage-4/5 extraction + quality-scoring template
-│   ├── figures.py                            # PRISMA flow diagrams + quality-/venue-tier charts
-│   └── export.py                               # export included studies to BibTeX / RIS
+│   ├── snowball.py                     # real citation snowballing (backward + forward, OpenAlex)
+│   ├── download.py                       # resolve + fetch open-access PDFs (arXiv, Unpaywall, OpenAlex, S2, CORE)
+│   ├── verify_citations.py                 # fabricated-citation guard: DOI -> Crossref -> diff
+│   ├── extract.py                            # build the Stage-4/5 extraction + quality-scoring template
+│   ├── figures.py                              # PRISMA flow diagrams + quality-/venue-tier charts
+│   └── export.py                                 # export included studies to BibTeX / RIS
 ├── examples/                # demo inputs, a completed demo run, and generated figures
 │   ├── README.md
 │   ├── *_sample.csv            # small curated sample of each stage's output
 │   ├── demo_output/              # CSV outputs of the ML-IDS demonstration run
 │   ├── demo_pdfs/                  # open-access PDFs fetched in the demo run
 │   └── figures/                      # prisma_flow, prisma_2020, quality_tiers, venue_tiers (.png + .pdf)
-├── requirements.txt
+├── .github/workflows/tests.yml  # CI: runs the pytest suite on push/PR
+├── pyproject.toml           # package metadata for `srp` (no console-script entry points)
+├── requirements.txt         # minimum versions
+├── requirements.lock         # exact pins -- use these for a review you'll publish
 ├── .env.example
 ├── LICENSE                  # MIT -- applies to the code (slr.py, srp/, scripts/)
 ├── LICENSE-docs              # CC-BY-4.0 -- applies to README.md / examples/README.md
@@ -161,16 +206,21 @@ Protocol  ->  Search  ->  Screen  ->  Extract  ->  Quality-assess  ->  Synthesiz
 `scripts/search.py` -> `scripts/dedup.py` -> `scripts/screen.py` cover Search
 and the mechanical half of Screening; `scripts/assist.py` optionally
 manual-paste-AI-assists the screening decisions, but the decision columns
-stay a human call either way. `scripts/download.py` retrieves full text for
-the full-text screening and extraction stages. `scripts/extract.py` builds
-the Extract + Quality-assess template (`R`/`A`/`T`/`C` rubric columns, again
-left blank for a human). `scripts/verify_citations.py` runs continuously,
-against every citation you plan to use, from extraction through final
-manuscript. `scripts/figures.py` covers Report's PRISMA flow diagram(s) and
-the quality-/venue-tier distribution charts. `scripts/export.py` covers
-Report's reference-list handoff to your citation manager. `slr.py`
-orchestrates all of the above end to end, plus the snowball loop between
-search rounds and the always-on provenance log.
+stay a human call either way. `scripts/snowball.py` adds a second,
+non-keyword identification method -- real backward/forward citation
+snowballing (Wohlin 2014) seeded from your included set, as distinct from
+the between-phase query-expansion loop. `scripts/download.py` retrieves full
+text for the full-text screening and extraction stages. `scripts/extract.py`
+builds the Extract + Quality-assess template (`R`/`A`/`T`/`C` rubric columns,
+again left blank for a human), optionally extended with a field-appropriate
+instrument's verbatim domains from `srp/appraisal.py`. `scripts/verify_citations.py`
+runs continuously, against every citation you plan to use, from extraction
+through final manuscript. `scripts/figures.py` covers Report's PRISMA flow
+diagram(s) and the quality-/venue-tier distribution charts; `srp/methods_report.py`
+drafts the search-methods paragraph from the same recorded search-strategy
+log. `scripts/export.py` covers Report's reference-list handoff to your
+citation manager. `slr.py` orchestrates all of the above end to end, plus the
+query-expansion loop between search rounds and the always-on provenance log.
 
 ---
 
@@ -231,6 +281,15 @@ Excluded:
   -- state this source-quality floor in the protocol up front, not improvised
   mid-screening.
 
+The guided wizard now asks about the grey-literature exclusion decision above
+directly (PRISMA item 14 -- excluding it is defensible, but it's also a
+publication-bias amplifier, so it needs a stated reason rather than silence),
+plus a reporting-bias-assessment question (item 21 -- only meaningful if you
+plan to meta-analyze; if you don't, the tool records that the item is scoped
+out rather than fabricating a funnel plot for a narrative synthesis), and the
+administrative items -- funding, competing interests, language restriction
+(items 25, 26, 5). All of these render into `PROVENANCE.md`.
+
 **Pre-register the protocol.** Kitchenham & Charters' guidelines don't mandate
 registration the way Cochrane/PRISMA clinical reviews do -- do it anyway.
 [OSF Registries](https://osf.io/registries) is the practical default for
@@ -252,9 +311,10 @@ Two structurally different approaches, usually combined:
   Xplore, Scopus, ACM Digital Library, Web of Science) -- high precision on
   field scope, fully reproducible, but requires institutional access.
 - **API / web search / snowballing** (arXiv, Semantic Scholar, OpenAlex, DBLP,
-  Google Scholar, backward/forward citation chasing per Wohlin 2014) -- lower
-  barrier, catches preprints Boolean-indexed databases miss, but is less
-  systematic and harder for someone else to reproduce exactly.
+  Google Scholar, backward/forward citation chasing per Wohlin 2014 --
+  `scripts/snowball.py`, or the guided path's **Citation snowballing** menu
+  action) -- lower barrier, catches preprints Boolean-indexed databases miss,
+  but is less systematic and harder for someone else to reproduce exactly.
 
 #### (a) General fill-in template
 
@@ -274,6 +334,14 @@ Filters: <year-from>-<year-to>, <document types>, <language>
 one query per pairwise thematic intersection you actually care about -- don't
 cram three-plus blocks into one query with nested ANDs; it collapses recall
 fast and gets hard to audit later.
+
+The guided wizard (`python slr.py`) now builds exactly this block structure for
+`search.py`'s automated sources too: it asks for one concept block at a time
+(synonyms within a block, comma-separated) and ANDs the blocks together --
+`(intrusion detection OR IDS) AND (machine learning OR deep learning)` -- rather
+than flattening every term you enter into one giant AND chain. Five keywords
+used to become a five-way mandatory AND before this; now they form whatever
+block structure you actually intend.
 
 #### (b) Worked example: ML-IDS Boolean strings, three databases
 
@@ -420,7 +488,7 @@ just a bare total.
    independent decision columns. A kappa below about 0.6 signals the criteria
    need tightening before you screen further, not just "agree to disagree."
 2. **A dedicated dedup tool, not manual eyeballing.** `scripts/dedup.py`
-   (exact DOI match, then `rapidfuzz` token-set-ratio fuzzy title match) is
+   (exact DOI match, then `rapidfuzz` token_sort_ratio fuzzy title match) is
    deterministic and re-runnable, unlike a human scanning a spreadsheet.
 3. **A documented screening log from the first record onward.** Every
    screened record gets an explicit decision + reason at both stages, even
@@ -439,20 +507,24 @@ For every study that survives full-text screening, extract a **fixed schema**
 of fields, not free-form notes. Fixed fields are what make cross-study
 synthesis (Stage 6) and quality scoring (Stage 5) tractable at scale.
 
-**Extraction CSV header:**
+**Extraction CSV header** (exactly what `scripts/extract.py` writes -- see
+"Running the pipeline" below for the full command):
 
 ```csv
-id,title,authors,year,venue,venue_tier,doi_or_url,study_type,thematic_classification,rq_mapping,core_contribution,quantitative_findings,limitations,quality_tier_provisional,extraction_reviewer,extraction_date,notes
+id,title,authors,year,venue,doi,thematic_class,study_type,contribution,key_findings,rq_mapping,limitations,venue_tier,R,A,T,C,quality_tier,extraction_reviewer,extraction_date,notes
 ```
 
 Column notes:
 
 - `venue_tier`: numeric 1/2/3, see Stage 5 -- keep it separate from
-  `quality_tier_provisional`; they are different axes.
-- `quantitative_findings`: copy numbers verbatim from the source, with enough
-  context (dataset, split, baseline, hardware) to be usable later without
-  re-reading the paper. Do not convert units at extraction time -- do
-  conversions at synthesis time, with the original preserved alongside.
+  `quality_tier`; they are different axes.
+- `R`/`A`/`T`/`C`: the per-dimension Rigor/Artifact/Threat-model/Currency
+  ratings (`Low`/`Some`/`High` concern) that `quality_tier` is aggregated
+  from -- see Stage 5's rubric.
+- `key_findings`: copy numbers verbatim from the source, with enough context
+  (dataset, split, baseline, hardware) to be usable later without re-reading
+  the paper. Do not convert units at extraction time -- do conversions at
+  synthesis time, with the original preserved alongside.
 - `rq_mapping`: which research question(s) this study evidences; a study can
   map to more than one RQ (semicolon-separated).
 - One row per study. If a study is later found to be a duplicate of another
@@ -538,6 +610,46 @@ material Cohen's kappa needs.
 study_id,rigor_R,artifact_A,threat_model_T,currency_C,raw_points,aggregate_tier,reviewer,notes
 ```
 
+### Field-driven critical appraisal (PRISMA item 11)
+
+R/A/T/C above is this project's own bespoke rubric, purpose-built for ML-security
+papers -- it is not a validated, externally citable instrument, and PRISMA item
+11 expects one. The guided wizard now asks which field your review is in and
+auto-recommends a real, cited instrument for it: Dybå & Dingsøyr (2008) for
+software engineering/CS/cybersecurity, Cochrane RoB 2 for randomized trials,
+ROBINS-I for non-randomized studies, QUADAS-2 for diagnostic-accuracy studies,
+CASP for qualitative research, MMAT for mixed-methods/social-science reviews,
+JBI for nursing/allied health, Drummond for economic evaluations, and so on --
+see `srp/appraisal.py` for the full registry, every domain transcribed verbatim
+from its cited source. Use R/A/T/C *and* the field instrument together if you
+want both the domain-specific security lens and an externally defensible check;
+`extract.py --instruments <key>` appends the chosen instrument's verbatim
+domains as extra extraction-sheet columns, alongside R/A/T/C, not instead of it.
+
+Certainty of evidence (PRISMA items 15, 22) is handled the same way: GRADE for
+quantitative findings (works without meta-analysis too -- see Murad et al. 2017),
+GRADE-CERQual for qualitative synthesis findings, or an explicit stated reason
+when the field has none (software engineering does not; see the auto-composed
+justification in `PROVENANCE.md`). A review-level self-check instrument (AMSTAR
+2, ROBIS, DARE, or the Campbell/MECCIR standards) appraises the review itself
+rather than its primary studies -- these three things (primary-study appraisal,
+certainty of evidence, review self-appraisal) are genuinely different objects,
+and conflating them is a common mistake. Its name and citation are recorded in
+`PROVENANCE.md` either way; the consolidation menu's **Write review
+self-appraisal checklist** action additionally writes
+`review_self_appraisal_<key>.md`, a fillable table with the chosen instrument's
+actual domains as rows -- the review-level counterpart to how
+`extract.py --instruments <key>` appends real columns for a primary-study
+instrument. Rating and justification are left blank for you to fill in against
+the finished manuscript; nothing here is scored automatically.
+
+**Piloting and double extraction** (Cochrane 5.4, Kitchenham 6.4): pass
+`--pilot N` to `extract.py` to also sample N studies into a second,
+identically-shaped sheet for a second reviewer to extract independently; then
+`extract.py --compare-a <sheet1> --compare-b <sheet2>` reports Cohen's kappa and
+every disagreement per categorical column (R/A/T/C, quality_tier, venue_tier,
+and any appraisal-instrument columns).
+
 ---
 
 ### Stage 6 -- Synthesis
@@ -620,7 +732,9 @@ synthesis rather than just trust it.
 Dependency-light: the individual stage scripts under `scripts/` need only
 `requests`, `pandas`, `rapidfuzz`, and `matplotlib`. The guided `slr.py`
 entry point additionally needs `questionary` and `rich` for its terminal UI
--- both are already in `requirements.txt`. Requires Python 3.9+.
+-- both are already in `requirements.txt`. Requires Python 3.10+ (some type
+hints use the 3.10 `X | None` union syntax; see `pyproject.toml`'s
+`requires-python`).
 
 ```bash
 pip install -r requirements.txt
@@ -630,7 +744,7 @@ This section documents each stage script individually, for the manual /
 advanced path. `python slr.py` (see [Two ways to run this](#two-ways-to-run-this))
 runs the same scripts for you, in order, with checkpointed resume.
 
-### `scripts/search.py` -- query four scholarly APIs, write `candidates.csv`
+### `scripts/search.py` -- query up to ten scholarly APIs, write `candidates.csv`
 
 ```bash
 python scripts/search.py \
@@ -641,29 +755,132 @@ python scripts/search.py \
     --out output/candidates.csv
 ```
 
-Queries OpenAlex, Semantic Scholar, Crossref, and arXiv; writes one row per
-candidate to `output/candidates.csv` (columns: `id, source, title, authors,
-year, venue, doi, url, abstract`). A single source's failure (network error,
-exhausted rate limit) is logged to stderr and skipped, not fatal to the whole
-run -- Semantic Scholar's unauthenticated pool in particular returns HTTP 429
-under load; pass `--s2-api-key` (or set `S2_API_KEY`) for a reliable higher
-limit. `--mailto` is required (falls back to the `MAILTO` environment
-variable) -- OpenAlex and Crossref use it for their "polite pool" of better
-rate limits, per their own API docs.
+Writes one row per candidate to `output/candidates.csv` (columns: `id, source,
+title, authors, year, venue, doi, url, abstract`). A single source's failure
+(network error, exhausted rate limit) is logged to stderr and skipped, not
+fatal to the whole run. `--mailto` is required (falls back to the `MAILTO`
+environment variable) -- OpenAlex and Crossref use it for their "polite pool"
+of better rate limits, and NCBI requires it on every PubMed call.
 
-### `scripts/dedup.py` -- de-duplicate by DOI, then fuzzy title match
+#### Sources and their optional API keys
+
+**Every API key is optional.** Six sources need no key at all. For the four
+that do, a missing key means that source is *skipped with a note on stderr* --
+never an error, and never fatal to the run. Select a subset with `--sources`
+(default: all ten).
+
+| Source | Key | Without a key | Documented rate limit |
+|---|---|---|---|
+| `openalex` | none | full access | polite pool via `--mailto` |
+| `crossref` | none | full access | polite pool via `--mailto` |
+| `arxiv` | none | full access | ~1 request/3 s (informal) |
+| `doaj` | none | full access | 2 requests/s |
+| `semanticscholar` | `--s2-api-key` | works, shared anonymous pool (~100 req/5 min across *all* keyless users) | 1 request/s with a key |
+| `pubmed` | `--pubmed-api-key` | works at 3 requests/s | 10 requests/s with a key |
+| `ieee` | `--ieee-api-key` | **skipped** | 10 calls/s, 200 calls/day |
+| `scopus` | `--scopus-api-key` | **skipped** | 9 requests/s, 20,000/week |
+| `springer` | `--springer-api-key` | **skipped** | 100 req/min, 500/day (free Basic tier) |
+| `core` | `--core-api-key` | **skipped** | 25 req/min personal, 10 req/min academic |
+
+Each key also falls back to an environment variable (`S2_API_KEY`,
+`IEEE_API_KEY`, `SCOPUS_API_KEY`, `SPRINGER_API_KEY`, `PUBMED_API_KEY`,
+`CORE_API_KEY`), which `.env` supplies -- see `.env.example`. Precedence is
+**flag > exported env var > `.env`**. The throttles above are enforced in
+`search.py` as documented constants, each carrying its source URL in a comment;
+HTTP 429 is retried with backoff on every source.
+
+Keys are never written into your run folder. `runs/<id>/config.json` holds no
+credentials, because that folder is the artifact you are meant to share with
+co-authors and attach as a reproducibility appendix. A key typed at the guided
+prompt lasts for that session only; **`.env` is the durable home for a key** and
+is what a resumed run reads them back from. Keys reach the stage scripts through
+the subprocess environment rather than the command line, so they stay out of your
+terminal scrollback and out of the process table on a shared machine.
+
+#### The search-strategy log (PRISMA items 6 and 7)
+
+Every run writes `<out>_search_strategy.csv` (the guided path puts it at
+`runs/<id>/phase_N/search_strategy.csv`) with one row per source: the **exact
+query string sent to that source**, the UTC timestamp it was sent, how many
+records came back, how many that source says exist, and whether the result was
+truncated.
+
+You need this and it cannot be reconstructed afterwards. PRISMA item 7 requires
+the full search strategy for each database including filters and limits, and
+item 6 the date last searched -- and the query is *transformed per source*
+(arXiv gets `all:{q}`, Scopus gets `TITLE-ABS-KEY(...) AND PUBYEAR > ...`,
+Crossref gets `query.bibliographic`, DOAJ gets a Lucene range). Those have
+materially different field scopes, and `candidates.csv` records only a `source`
+label.
+
+The log also makes **truncation visible**. `--max-per-source` caps every source,
+and that cap was previously reported as "records identified". It is not: it is a
+relevance-ranked sample drawn by each API's own undocumented ranking. When a
+source is truncated, `search.py` says so on stderr and the guided path warns you
+and logs which sources to provenance. Raise `--max-per-source` for a real search
+round, or report the truncation explicitly in your methods.
+
+One thing the log will show you immediately: a query you wrote as `"a" AND "b"`
+can report millions of "available" records on Crossref, because
+`query.bibliographic` scores relevance rather than applying your boolean. Read
+the `total_available` column before trusting any source's hit count as a
+database-level result.
+
+#### Four things worth knowing before you rely on these
+
+**IEEE and Scopus need an institutional subscription.** Neither is realistically
+obtainable by an unaffiliated researcher: IEEE limits API access to "current
+IEEE customers", and a Scopus key is authenticated against your institution's
+IP range. Get the access sorted before planning a review around them.
+
+**Scopus only works on campus, unless you have an institutional token.** Pass
+`--scopus-insttoken` (or set `SCOPUS_INSTTOKEN`) to use a Scopus key from off
+your university network; Elsevier support must enable it for your account.
+
+**Scopus abstracts cost throughput.** Abstracts live only in Scopus's COMPLETE
+view, which caps pages at 25 records instead of 200. `search.py` defaults to
+`--scopus-view COMPLETE` and automatically falls back to `STANDARD` if your key
+is refused -- in which case Scopus rows arrive with an **empty abstract**, and
+title-only screening is all they can support.
+
+**IEEE's 200 calls/day is enforced per run, not per day.** `search.py` keeps no
+cross-run counter, so several runs in one day can still exhaust the quota.
+
+### `scripts/dedup.py` -- de-duplicate by DOI, then fuzzy title + author match
 
 ```bash
 python scripts/dedup.py --in output/candidates.csv --out output/candidates_dedup.csv \
     --title-threshold 92
 ```
 
-Exact (normalized) DOI match first; then, for DOI-less records only,
-`rapidfuzz` `token_set_ratio` fuzzy title matching within the same
-publication year (bucketing by year keeps this roughly linear instead of
-O(n²) over the whole corpus). Adds `doi_norm`, `title_norm`, `duplicate_of`,
-`dedup_method` columns; canonical (non-duplicate) records have an empty
-`duplicate_of`.
+Exact (normalized) DOI match first; then `rapidfuzz` `token_sort_ratio` fuzzy
+title matching across **all** remaining records, corroborated by a shared author
+surname. Adds `doi_norm`, `title_norm`, `duplicate_of`, `dedup_method` columns;
+canonical (non-duplicate) records have an empty `duplicate_of`.
+
+This step deletes records before a human ever sees them and its output is the
+PRISMA "duplicates removed" number, so the matching rules are deliberately
+asymmetric -- a missed duplicate costs one manual catch during screening, a false
+merge silently deletes a study from your review forever. Three rules follow from
+that:
+
+- **`token_sort_ratio`, not `token_set_ratio`.** The latter scores 100 whenever one
+  title's token set is a subset of the other's, so "Anomaly Detection in IoT
+  Networks" and "Anomaly Detection in IoT Networks Using Federated Learning" scored
+  a perfect match and the second paper was deleted. No threshold could fix that.
+- **A length guard** (`--min-length-ratio`, default 0.75). A title that is a strict
+  extension of another ("... : A Survey") is a different paper.
+- **A shared author surname is required** for any fuzzy merge. Generic titles are
+  common in this field -- the sample corpus alone contains two distinct book
+  chapters both titled "Machine Learning for Intrusion Detection", by different
+  authors -- and title similarity alone is not evidence they are the same work. If
+  either record has no parseable author, the merge is refused.
+
+Fuzzy matching runs across year boundaries and across records that already have
+DOIs, because the most common duplicate in a real review is an arXiv preprint and
+its published version, which differ in **both** year and DOI. Those merges are
+labelled `fuzzy_title_crossdoi_<score>` so you can audit them. The canonical
+survivor is preferentially the record that carries a DOI, so it stays citable.
 
 ### `scripts/screen.py` -- build the screening spreadsheet
 
@@ -673,9 +890,18 @@ python scripts/screen.py --in output/candidates_dedup.csv --out output/screening
 
 Writes one row per canonical record with blank `ta_decision`/`ta_reason`
 (title/abstract stage) and `ft_decision`/`ft_reason` (full-text stage) columns,
-plus a `reviewer` column, for a human to fill in. Duplicate this file per
-reviewer (or add a second reviewer's decision columns) before computing
-inter-rater agreement.
+an `abstract` column (so both you and the AI-assist prompt can screen on it), and
+a `reviewer` column. Duplicate this file per reviewer before computing
+inter-rater agreement -- see [Inter-rater agreement](#inter-rater-agreement-cohens-kappa).
+
+**Re-running is safe.** If the output already exists, decisions already recorded
+in it are carried over onto the rebuilt sheet, matched by record id, and the
+counts are reported. Adding a search source and re-running the pipeline is an
+ordinary thing to do, and it used to destroy every decision in the file silently,
+with exit code 0. Pass `--force` to deliberately start over from blank; it tells
+you how many decisions it is discarding. A record that is no longer canonical
+(now flagged a duplicate) is dropped, and if it carried a decision you get a
+warning rather than silence.
 
 ### `scripts/assist.py` -- manual-paste AI-assist screening
 
@@ -691,8 +917,16 @@ python scripts/assist.py build --in output/candidates_dedup.csv --stage ta \
     --out prompt_ta.txt --topic "ML-IDS systematic review"
 # -> paste prompt_ta.txt into your chatbot of choice; save the reply to reply.txt
 
-python scripts/assist.py parse --response reply.txt --into output/screening.csv --stage ta
+python scripts/assist.py parse --response reply.txt --into output/screening.csv \
+    --stage ta --prompt prompt_ta.txt
 ```
+
+`build` also writes `prompt_ta.txt.ids.json` alongside the prompt file -- exactly
+the ids sent in that batch. Pass that same prompt path to `parse` via `--prompt`
+so it can validate the reply against the batch actually sent, not every id in the
+whole sheet; without `--prompt`, `parse` still works but warns that a hallucinated
+or echoed id belonging to some other undecided row elsewhere in the sheet
+wouldn't be caught.
 
 `--stage` is `ta` (title/abstract) or `ft` (full text) -- run `build`/`parse`
 once per stage. `--batch-size` (default 20) and `--start` let you keep each
@@ -701,20 +935,98 @@ corpus in batches without re-sending already-screened rows. `build` already
 skips any row with a decision filled in, so re-running it after a partial
 `parse` only re-prompts what's still undecided.
 
+**Screen against your protocol's criteria, not "relevance".** Pass
+`--criteria-file` (or `--criteria`, or `--run <run-dir>` to read them from the
+review's `config.json`) so the prompt applies your pre-specified eligibility
+criteria verbatim. Without one of those, `build` **refuses to write the
+prompt** (exit code 2): the fallback would be a generic "include if plausibly
+relevant" instruction, which is exactly the unstructured judgement
+pre-registration exists to prevent, and a review screened that way cannot
+claim to have applied its stated criteria. Pass `--allow-generic-fallback` if
+you genuinely intend to screen that way anyway -- it still runs, with a loud
+warning on stderr, but it is now an explicit choice rather than a silent
+default. The guided path (`slr.py`) asks the same question interactively
+before running AI-assist with no criteria configured. The criteria file may
+use `INCLUDE:` / `EXCLUDE:` section headers.
+
 **The AI only assists -- it does not decide.** Every `assist.py`-parsed
 decision is a *proposed* decision, written into the same `ta_decision`/
 `ft_decision` columns a human would fill in by hand, with `reviewer` set to
-`ai-assisted` where left blank so it's traceable later. The actual
-inclusion/exclusion call happens at the human review gate (`slr.py`'s "Human
-review gate" step in the guided path; a manual read-through of
-`screening.csv` in the manual path) -- see the integrity guardrails below.
+`ai-assisted` so it's traceable later. The actual inclusion/exclusion call
+happens at the human review gate (`slr.py`'s "Human review gate" step in the
+guided path; a manual read-through of `screening.csv` in the manual path) --
+see the integrity guardrails below.
 
-This is a different tool for a different job than the "AI tools for
-writing/reading" section further down: that section is about using an LLM to
-draft or read prose (search-term expansion, section drafting, synthesis
-summaries); `assist.py` is specifically the screening-assist step, and unlike
-those tasks it needs no account, API key, or paid subscription -- any free
-web chatbot works.
+Four things the parser refuses to do, because each one silently corrupts the
+screening log:
+
+- **It will not decide a record that was not in the batch.** Replies are
+  reconciled against the ids actually sent (the guided path always does this
+  correctly; the manual CLI needs `--prompt` -- see above); an id the model
+  invents or echoes from an earlier batch is reported and dropped, not written
+  onto whatever record happens to carry that number.
+- **It will not overwrite a decision that is already recorded.** Re-parsing a stale
+  reply used to replace a human's decision with the model's while leaving the
+  human's initials on the row. Pass `--overwrite` if you mean it; attribution then
+  moves to `ai-assisted` along with the decision.
+- **It will not accept a "maybe" at the full-text stage.** `ft_decision` is
+  PRISMA's terminal stage (include or exclude only) -- the prompt doesn't offer
+  MAYBE there, and a chatbot that answers one anyway has it refused rather than
+  silently written, where it would vanish from the PRISMA counts with no
+  exclusion reason recorded.
+- **It will not drop anything silently.** Unparseable lines, out-of-batch ids,
+  contradictory duplicate decisions, and studies that got no reply back are all
+  counted and reported.
+
+This is a different tool for a different job than the "AI-tools integration"
+section further down: that section is about using an LLM to draft or read
+prose (search-term expansion, section drafting, synthesis summaries);
+`assist.py` is specifically the screening-assist step, and unlike those tasks
+it needs no account, API key, or paid subscription -- any free web chatbot
+works.
+
+### Full-text screening -- where "included" is actually decided
+
+In the guided path (`python slr.py`), the consolidation menu's **Full-text
+screening** step walks you through the merged TA-included set one study at a
+time and records `ft_decision` / `ft_reason` into `included_final.csv`. An
+exclusion requires a reason, because PRISMA item 16b requires you to cite the
+reports you excluded at full text and say why.
+
+This matters more than it sounds. PRISMA 2020 defines the "Studies included in
+synthesis" box as studies that survived **full-text eligibility assessment**.
+Title/abstract includes are papers you thought looked promising, not papers you
+read. The PRISMA `included` count is therefore sourced from `ft_decision ==
+include` only: until you record full-text decisions, `included` is 0 and the
+tool tells you why rather than quietly reporting your TA-includes as included
+studies.
+
+If you prefer, edit the `ft_decision` / `ft_reason` columns of
+`included_final.csv` by hand and re-run the step to fold them into the audit
+trail.
+
+### Inter-rater agreement (Cohen's kappa)
+
+Two reviewers screen the same records independently, then you compute kappa
+**before** reconciling. Kitchenham SS6.3 and Cochrane SS4.6.1 both require
+this, and single-reviewer screening is a named validity threat -- the first
+question a peer reviewer asks about a review's screening is what the agreement
+was.
+
+To do it: copy a phase's `screening.csv`, have the second reviewer fill in
+`ta_decision` without seeing the first reviewer's calls, then use the guided
+path's **Inter-rater agreement** menu step and point it at both files. You get
+Cohen's kappa with its Landis & Koch band, raw percent agreement, a confusion
+matrix, and `conflicts_<stage>.csv` listing every disagreement to reconcile.
+Say in your methods how you resolved them (discussion, or a third reviewer).
+
+Only records **both** reviewers decided are compared -- that is what kappa is
+defined over; records only one of them touched are missing data, not
+disagreement. One caveat the tool enforces rather than hides: if both reviewers
+used a single identical label (everything included, say), chance agreement is
+100%, kappa is mathematically undefined, and reporting it as 1.0 would be a
+misreported statistic. In that case you get the raw agreement and an
+explanation instead of a number.
 
 ### `scripts/download.py` -- resolve and fetch open-access PDFs
 
@@ -774,7 +1086,51 @@ Stage-4/5 template, left blank for a human reviewer.
 **A**rtifact availability, **T**hreat-model completeness, and **C**urrency
 (see Stage 5 for the full rubric) -- and `quality_tier` is the aggregate
 `A`/`B`/`C` letter grade a reviewer derives from them via a published
-aggregation formula, decided before scoring begins.
+aggregation formula, decided before scoring begins. `extraction_reviewer`,
+`extraction_date`, and `notes` are always appended last, for piloting/audit
+traceability (see Stage 5's "Field-driven critical appraisal" above).
+
+```bash
+# Append a field-appropriate appraisal instrument's verbatim domains
+python scripts/extract.py --in output/screening.csv --instruments dyba_dingsoyr
+
+# Pilot: sample 10 studies into a second sheet for independent double extraction
+python scripts/extract.py --in output/screening.csv --pilot 10
+
+# Compare two completed extraction sheets -- Cohen's kappa + conflicts per column
+python scripts/extract.py --compare-a extraction.csv --compare-b extraction_pilot.csv
+```
+
+### `scripts/snowball.py` -- real citation snowballing (backward + forward)
+
+```bash
+python scripts/snowball.py --seeds runs/<id>/final_dedup.csv --mailto you@example.com \
+    --direction both --max-per-seed 50 --out output/candidates_snowball.csv
+```
+
+This is Wohlin (2014) citation snowballing -- distinct from `slr.py`'s
+between-phase "query expansion," which mines keywords from included titles and
+was previously (incorrectly) also called snowballing. This script walks the
+actual citation graph via OpenAlex: **backward**, reading each seed study's
+reference list; **forward**, finding papers that cite each seed. Point
+`--seeds` at `included_final.csv` or `final_dedup.csv`; results are written in
+the same `Candidate` shape as `search.py`'s output, with a `snowball_from`
+column recording which seed(s) surfaced each record.
+
+Run the output through `dedup.py` and `screen.py` exactly like a database
+search's hits -- a citation hit is an identification candidate, not an
+automatic include. In the guided path, use the consolidation menu's **Citation
+snowballing** action (which does this for you, into `runs/<id>/snowball/`) and
+then **Merge citation-snowball results into included set** once you've screened
+them, which namespaces their ids (`sb_N`) and tags them `phase="snowball"` so
+they can never collide with a database-search id and stay distinguishable in
+PRISMA reporting as their own identification method.
+
+A title-search fallback (used when a seed has no DOI) is guarded by a
+`rapidfuzz` similarity check against the seed's own title -- OpenAlex's title
+search always returns its single best hit, even for a title with no genuine
+match, so an ungated fallback would silently resolve an unrelated paper and
+pull in its entire citation subgraph.
 
 ### `scripts/verify_citations.py` -- the fabricated-citation guard
 
@@ -829,9 +1185,11 @@ Four figures land in `--outdir`:
    overridden) is printed to stdout.
 2. **`prisma_2020.png`/`.pdf`** -- the **official PRISMA 2020 three-column
    template**: previous studies | new studies via databases & registers |
-   new studies via other methods. The snowball phases (search rounds beyond
-   the first, run via keyword expansion rather than a fresh database query)
-   populate the "other methods" column. Every number the pipeline actually
+   new studies via other methods. Note that the later phases are additional
+   *database* searches with an expanded query, not identification by another
+   method -- if you populate the "other methods" column, it should be from a
+   genuine non-database pass (citation snowballing, contacting authors, grey
+   literature), which you do by hand. Every number the pipeline actually
    knows -- identified, duplicates removed, screened, excluded at TA,
    assessed at full text, included -- is filled in automatically, exactly
    like `prisma_flow.png`. Boxes the pipeline has no way to know
@@ -876,9 +1234,18 @@ importable library under `srp/`, rather than reimplementing run bookkeeping
 per script:
 
 - **`srp/config.py`** -- `ReviewConfig`: the review's settings (topic,
-  keywords, year range, sources, thresholds, reviewer name, which chatbot is
-  doing AI-assist) as one JSON-serializable dataclass, saved to and loaded
-  from `runs/<run-id>/config.json`.
+  keywords/keyword blocks, year range, sources, thresholds, reviewer name,
+  which chatbot is doing AI-assist, research field and chosen appraisal
+  instruments) as one JSON-serializable dataclass, saved to and loaded from
+  `runs/<run-id>/config.json`; secrets are hydrated from the environment and
+  never persisted to that file.
+- **`srp/env.py`** -- loads `.env` into the process environment (flag >
+  exported env var > `.env` precedence; see "Sources and their optional API
+  keys" above).
+- **`srp/normalize.py`** -- the single definition of "same DOI" / "same title"
+  (`normalize_doi()`, `normalize_title()`, `record_key()`), shared by
+  `scripts/dedup.py` and `srp/state.py` so the two can never silently disagree
+  on what counts as a duplicate.
 - **`srp/state.py`** -- `RunState`: a per-review workspace under
   `runs/<run-id>/`, with a `state.json` of per-phase/per-stage checkpoints
   (what `slr.py`'s "Resume" option fast-forwards past) and an append-only
@@ -887,6 +1254,23 @@ per script:
   (`record_key()`) -- so when phase 2's snowball search re-surfaces a record
   already screened in phase 1, it's silently skipped rather than re-asked
   about.
+- **`srp/decisions.py`** -- the single ingestion path for a proposed decision
+  (from `scripts/assist.py` or the guided AI-assist step) into `ta_decision`/
+  `ft_decision`, and the shared "maybe proceeds like include" policy
+  (`pick_progressed()`) that `extract.py`, `export.py`, and the PRISMA count
+  derivation all read from, so they can't silently diverge on which rows count
+  as included.
+- **`srp/agreement.py`** -- Cohen's kappa, its Landis & Koch band, and the
+  confusion matrix behind [Inter-rater agreement](#inter-rater-agreement-cohens-kappa)
+  and `extract.py --compare-a/--compare-b`.
+- **`srp/appraisal.py`** -- the field -> critical-appraisal-instrument
+  registry behind [Field-driven critical appraisal](#field-driven-critical-appraisal-prisma-item-11):
+  `instrument_columns()` for primary-study extraction-sheet columns,
+  `render_review_self_appraisal()` for the review-level checklist file, and
+  `compose_appraisal_disclosure()` for the `PROVENANCE.md` paragraph.
+- **`srp/methods_report.py`** -- drafts the search-methods paragraph and its
+  supplementary tables from the recorded search-strategy log and PRISMA
+  counts (the consolidation menu's "Draft methods paragraph" action).
 - **`srp/provenance.py`** -- `Provenance`: an always-on run manifest. Every
   search query, its date, source, and hit count; every dedup pass; every
   AI-assisted screening batch and its parsed counts; every human review-gate
@@ -995,7 +1379,11 @@ Output STRICT JSON, one object per record, matching this schema exactly:
   "decision": "include" | "exclude" | "maybe",
   "reason": "<one sentence citing which specific criterion drove the decision>"
 }
-Return a JSON array of these objects, nothing else -- no prose before or after.
+Return a JSON array of these objects, nothing else -- no prose before or after. The "id" must
+be copied EXACTLY from each record below -- do not renumber, re-sequence, add, omit, merge,
+or reorder the records. Record ids are not necessarily sequential (e.g. 12, 47, 61); answering
+positionally (treating the first record as id 1) silently misattributes the decision to a
+different, unrelated record.
 
 Do not include a decision for any record where the abstract is missing or under 20 words --
 mark those "maybe" with reason "insufficient abstract" instead of guessing from the title alone.
@@ -1017,17 +1405,17 @@ information stated in the paper -- do not infer or estimate a number that is not
 given. If a field is not addressed in the paper, write "not reported," do not leave it blank
 and do not guess.
 
-Schema: thematic_classification, venue, venue_tier (1/2/3 per: <paste your tier definitions>),
-study_type, core_contribution, quantitative_findings (verbatim numbers, with the dataset/
+Schema: thematic_class, venue, venue_tier (1/2/3 per: <paste your tier definitions>),
+study_type, contribution, key_findings (verbatim numbers, with the dataset/
 split/baseline context needed to interpret them), rq_mapping (which of RQ1-RQ4 this
 evidences), limitations (per the paper's own stated limitations, not your assessment),
-quality_tier_provisional (do not fill this in -- quality scoring is a separate human pass).
+quality_tier (do not fill this in -- quality scoring is a separate human pass).
 
 Paper: <attach or paste full text>
 ```
 
-Human step: cross-check every `quantitative_findings` entry against the source
-PDF directly -- this is the field most likely to contain a subtly wrong number
+Human step: cross-check every `key_findings` entry against the source PDF
+directly -- this is the field most likely to contain a subtly wrong number
 (right order of magnitude, wrong dataset split, wrong baseline) that reads as
 plausible.
 
@@ -1047,7 +1435,10 @@ Assess: do these studies converge or conflict on DIRECTION (not magnitude)? If m
 differ substantially, explain the likely methodological driver (different dataset/split/
 evaluation protocol) rather than treating the difference as a real disagreement. Explicitly
 flag if any pair of studies conflicts even on direction -- that is a genuine disagreement,
-not a measurement-context artifact, and needs separate discussion.
+not a measurement-context artifact, and needs separate discussion. If you cannot identify a
+plausible methodological driver from the context given, say so explicitly rather than
+proposing one speculatively -- an invented-but-plausible-sounding explanation is worse than
+admitting the discrepancy is unexplained.
 
 Do not average or pool the numbers. State whether meta-analysis would even be appropriate
 here, and why or why not.
@@ -1110,9 +1501,10 @@ These are non-negotiable, not best-effort suggestions.
    is a real, documented failure mode in systematic reviews -- not a
    hypothetical. Whether it originates from a human author cutting corners or
    an LLM hallucinating a reference, the mitigation is identical: resolve
-   every DOI/arXiv ID you cite against a real registry (`scripts/verify_citations.py`)
-   and confirm title and authors match, before it enters your corpus or your
-   own manuscript.
+   every DOI you cite against a real registry (`scripts/verify_citations.py`,
+   which checks Crossref -- a bare arXiv identifier with no DOI isn't
+   resolvable by it) and confirm title and authors match, before it enters
+   your corpus or your own manuscript.
 2. **Keep a human in the loop for every single inclusion/exclusion decision.**
    AI-assisted triage (`scripts/assist.py` included) can propose a decision;
    it cannot be the decision. This applies at both the title/abstract and
@@ -1182,7 +1574,17 @@ These are non-negotiable, not best-effort suggestions.
       context to interpret later
 - [ ] Quality-rubric scoring (R/A/T/C) with a published aggregation formula;
       per-dimension scores released, not just the aggregate tier
+- [ ] A field-appropriate, externally citable appraisal instrument selected
+      (`srp/appraisal.py`) alongside R/A/T/C, matching the review's actual field
+- [ ] If a review-level self-check instrument applies (AMSTAR 2, ROBIS, DARE,
+      MECCIR), its checklist filled in against the finished manuscript
+      (consolidation menu's "Write review self-appraisal checklist")
+- [ ] Certainty of evidence assessed (GRADE / GRADE-CERQual) or its absence
+      explicitly justified for the field
 - [ ] Venue tier and quality tier reported as separate axes
+- [ ] Citation snowballing (backward + forward, `scripts/snowball.py`) run and
+      screened as its own identification method -- distinct from database
+      search and from title-term query expansion -- if the protocol calls for it
 - [ ] Narrative/thematic synthesis by RQ, with explicit convergence/conflict
       assessment; meta-analysis only where studies are genuinely comparable
 - [ ] Every citation DOI-verified via `scripts/verify_citations.py` before it
@@ -1190,6 +1592,11 @@ These are non-negotiable, not best-effort suggestions.
 - [ ] PRISMA flow diagram(s) (`scripts/figures.py`) with a reasoned (not bare)
       excluded-count breakdown
 - [ ] PRISMA 2020 checklist graded honestly, gaps disclosed rather than hidden
+- [ ] Search-methods paragraph drafted from the pipeline's own recorded search
+      strategy (consolidation menu's "Draft methods paragraph"), not retyped
+      by hand, so truncated sources carry their caveat automatically
+- [ ] Grey-literature inclusion/exclusion and reporting-bias-assessment
+      decisions stated explicitly (PRISMA items 14, 21), not left silent
 - [ ] Data-availability supplement: search strings, screening log, extraction
       matrix, and full quality-rubric grid all released
 - [ ] AI-usage log kept throughout; disclosure statement written from that

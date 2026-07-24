@@ -1,0 +1,17 @@
+# Exact versions this pipeline was last verified against. Install with:
+#     pip install -r requirements.lock
+#
+# Use this, not requirements.txt, for a review you intend to publish -- it is what
+# makes "re-run my search" mean the same thing next year as it does today. Cite the
+# versions below in your methods section.
+#
+# Regenerate after deliberately upgrading and re-running the tests:
+#     pip freeze > requirements.lock   (then trim to the direct dependencies below)
+#
+# Verified on: Python 3.14, Windows 10
+requests==2.32.5
+pandas==2.3.3
+rapidfuzz==3.14.5
+matplotlib==3.10.8
+questionary==2.1.1
+rich==15.0.0

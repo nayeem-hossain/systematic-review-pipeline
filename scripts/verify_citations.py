@@ -50,7 +50,15 @@ def crossref_lookup(doi: str) -> tuple[bool, str, str]:
         return False, "", f"request error: {e}"
     if r.status_code != 200:
         return False, "", f"http {r.status_code}"
-    msg = r.json().get("message", {})
+    try:
+        # The try covers r.json(), not just the request. Crossref can answer 200
+        # with an HTML maintenance page, and an uncaught JSONDecodeError here used
+        # to kill the script -- which exits 1, which the orchestrator was told to
+        # treat as success. The fabricated-citation guard would then report "done"
+        # having never run.
+        msg = r.json().get("message", {})
+    except ValueError as e:
+        return False, "", f"non-JSON response from Crossref: {e}"
     real_title = (msg.get("title") or [""])[0]
     real_authors = "; ".join(a.get("family", "") for a in msg.get("author", []) if a.get("family"))
     return True, real_title, real_authors
@@ -125,8 +133,35 @@ def main():
         pd.DataFrame(results).to_csv(args.out, index=False, encoding="utf-8")
         print(f"wrote results to {args.out}")
 
+    # Exit codes are a contract with slr.py, which must be able to tell
+    # "the guard ran and found bad citations" (a finding you act on) from
+    # "the guard did not run" (a finding you must not mistake for a pass):
+    #   0 = ran, every citation verified
+    #   1 = ran, some citations FAILED  -- an expected, actionable outcome
+    #   2 = did NOT run properly        -- see main()'s exception handler
     sys.exit(0 if n_fail == 0 else 1)
 
 
+def _main_guarded() -> int:
+    """Map any unexpected crash to exit 2.
+
+    Exit 1 already means "ran, found failures", and slr.py accepts it as success
+    for that reason -- so an uncaught exception exiting 1 was indistinguishable
+    from a clean run. A guard that silently did not run is worse than one that
+    fails loudly.
+    """
+    try:
+        main()
+        return 0
+    except SystemExit as e:
+        return int(e.code or 0)
+    except Exception as e:  # noqa: BLE001 -- deliberate catch-all at the boundary
+        print(f"ERROR: citation verification did not complete: "
+               f"{type(e).__name__}: {e}", file=sys.stderr)
+        print("This is NOT a pass. The fabricated-citation guard did not run.",
+               file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_main_guarded())

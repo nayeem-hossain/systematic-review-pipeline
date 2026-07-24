@@ -57,6 +57,7 @@ Count derivation:
 #   (endpoint URLs, pagination, parsing, rate-limit handling, plot geometry).
 # ===========================================================================
 import argparse
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -67,6 +68,12 @@ import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 from matplotlib.patches import FancyBboxPatch  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
+
+# make the repo root importable so `srp` resolves when run as `python scripts/figures.py`
+import os as _os, sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+from srp.decisions import TA_PROCEED_DECISIONS  # noqa: E402
 
 DPI = 300
 
@@ -116,7 +123,7 @@ def derive_prisma_counts(candidates: pd.DataFrame, dedup: pd.DataFrame,
     ft = _norm(screening.get("ft_decision", pd.Series(dtype=object)))
 
     excluded_ta = int(ta.eq("exclude").sum())
-    assessed_ft = int(ta.isin(["include", "maybe"]).sum())
+    assessed_ft = int(ta.isin(TA_PROCEED_DECISIONS).sum())
     excluded_ft = int(ft.eq("exclude").sum())
     included = int(ft.eq("include").sum())
 
@@ -494,20 +501,49 @@ def _tier_bar_chart(counts: dict, order: list, labels: list, colors: list,
     plt.close(fig)
 
 
-def _normalize_quality_tier(v) -> Optional[str]:
+# A quality tier is a letter, optionally with a +/- modifier: A, A-, B+, B, C...
+# The negative lookahead (rather than \b) is deliberate: \b after an optional
+# "-" can never match at end-of-string, so "A-" would silently lose its modifier.
+# This form also rejects "Awesome" while accepting "A" and "C+ borderline".
+_QUALITY_TIER_RE = re.compile(r"^([ABC])\s*([+-])?(?![A-Z0-9])")
+# A venue tier is T1/T2/T3, "Tier 2", or a bare 1/2/3 -- anchored at the START.
+_VENUE_TIER_RE = re.compile(r"^T?(?:IER)?\s*([123])\b")
+
+
+def _normalize_quality_tier(v, keep_modifier: bool = False) -> Optional[str]:
+    """Normalize a quality tier.
+
+    The README's Stage-5 rubric publishes a 7-point scale (A, A-, B+, B, B-, C+,
+    C) and gives a mechanical formula for it, but this took s[0] and collapsed
+    A- -> A and B+ -> B. That silently destroys the exact distinction the formula
+    exists to make, in a published figure. Charts still bucket by letter (three
+    bars stay readable), but the modifier is now parsed rather than assumed away,
+    and unrecognized values are rejected loudly instead of being mapped to
+    whatever letter happened to come first.
+    """
     s = str(v).strip().upper()
     if not s or s == "NAN":
         return None
-    letter = s[0]
-    return letter if letter in ("A", "B", "C") else None
+    m = _QUALITY_TIER_RE.match(s)
+    if not m:
+        return None
+    return m.group(1) + (m.group(2) or "") if keep_modifier else m.group(1)
 
 
 def _normalize_venue_tier(v) -> Optional[str]:
+    """Normalize a venue tier.
+
+    Anchored at the start. This used to scan the WHOLE string for the first of
+    '1','2','3' and return on it, so 'T3 (thesis, 2021)' classified as T1 -- any
+    year, page number or note containing a digit hijacked the tier. extract.py
+    documents venue_tier as free text, so annotated values are expected, and the
+    result was a venue-tier chart that over-reported Tier 1.
+    """
     s = str(v).strip().upper()
-    for digit in ("1", "2", "3"):
-        if digit in s:
-            return f"T{digit}"
-    return None
+    if not s or s == "NAN":
+        return None
+    m = _VENUE_TIER_RE.match(s)
+    return f"T{m.group(1)}" if m else None
 
 
 def draw_quality_tiers(quality: pd.DataFrame, outdir: Path):

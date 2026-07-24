@@ -1,6 +1,19 @@
+# Minimum versions that expose the APIs this pipeline uses.
+#
+# For a real review, install the exact pins instead:
+#     pip install -r requirements.lock
+#
+# A systematic review is supposed to be reproducible years after publication, and
+# these libraries change behaviour in ways that silently move numbers -- pandas in
+# particular has shifted CSV dtype coercion and NaN handling across minor versions,
+# and this codebase already carries workarounds for that drift. "Whatever pandas
+# resolves to in 2028" is not a reproducible dependency. Record which file you
+# installed from in your methods section.
 requests>=2.31
 pandas>=2.0
 rapidfuzz>=3.6
 matplotlib>=3.6
 questionary>=2.0
 rich>=13.0
+
+# Tests only, not needed to run the pipeline:  pip install pytest

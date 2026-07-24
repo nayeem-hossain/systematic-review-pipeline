@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -30,7 +31,54 @@ import pandas as pd
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
-from srp.llm_assist import build_screening_prompt, parse_screening_response
+from srp.llm_assist import build_screening_prompt, parse_screening_response, compose_criteria
+from srp.decisions import apply_decisions
+
+
+def _split_criteria_text(text: str) -> tuple[str, str]:
+    """Split a criteria file into (inclusion, exclusion) on INCLUDE:/EXCLUDE: headers.
+
+    Free text with no headers is treated entirely as inclusion criteria, which is
+    the conservative reading: unlabelled criteria are applied, not silently halved.
+    """
+    lines = text.splitlines()
+    inc: list[str] = []
+    exc: list[str] = []
+    bucket = inc
+    for line in lines:
+        head = line.strip().lower().rstrip(":").strip()
+        if head in ("include", "inclusion", "inclusion criteria"):
+            bucket = inc
+            continue
+        if head in ("exclude", "exclusion", "exclusion criteria"):
+            bucket = exc
+            continue
+        bucket.append(line)
+    return "\n".join(inc).strip(), "\n".join(exc).strip()
+
+
+def _resolve_criteria(args) -> str:
+    """Criteria precedence: --criteria > --criteria-file > the run's config.json."""
+    if getattr(args, "criteria", ""):
+        return compose_criteria(args.stage, args.criteria, "")
+    path = getattr(args, "criteria_file", None)
+    if path:
+        try:
+            inc, exc = _split_criteria_text(Path(path).read_text(encoding="utf-8"))
+            return compose_criteria(args.stage, inc, exc)
+        except OSError as e:
+            print(f"error: could not read --criteria-file {path}: {e}", file=sys.stderr)
+            raise SystemExit(2)
+    if getattr(args, "run", None):
+        try:
+            from srp.state import RunState
+            cfg = RunState.load(args.run).config
+            return compose_criteria(args.stage,
+                                     cfg.get("inclusion_criteria", ""),
+                                     cfg.get("exclusion_criteria", ""))
+        except (ImportError, OSError, KeyError):
+            pass
+    return ""
 
 _DECISION_COL = {"ta": "ta_decision", "ft": "ft_decision"}
 _REASON_COL = {"ta": "ta_reason", "ft": "ft_reason"}
@@ -98,14 +146,48 @@ def cmd_build(args: argparse.Namespace) -> int:
         for _, row in batch.iterrows()
     ]
 
+    missing_abstracts = sum(1 for r in records if not str(r.get("abstract") or "").strip())
+    if missing_abstracts and args.stage == "ta":
+        print(f"WARNING: {missing_abstracts}/{len(records)} record(s) in this batch have no "
+               f"abstract, but the prompt asks the model to screen by title AND abstract. "
+               f"Those will be screened on title alone. Make sure --in points at a sheet "
+               f"built by a current screen.py (it carries an 'abstract' column).",
+               file=sys.stderr)
+
+    criteria = _resolve_criteria(args)
+    if not criteria:
+        if not args.allow_generic_fallback:
+            print(
+                "error: no --criteria / --criteria-file / --run given, so this batch would "
+                "be screened on a generic 'is this plausibly relevant' judgement instead of "
+                "your protocol's eligibility criteria -- not defensible screening for a "
+                "systematic review. Pass --criteria-file with your protocol's criteria, or "
+                "pass --allow-generic-fallback if you genuinely intend to screen this way.",
+                file=sys.stderr,
+            )
+            return 2
+        print("WARNING: --allow-generic-fallback set -- this batch will be screened on a "
+              "generic 'is this plausibly relevant' judgement, not your protocol's "
+              "eligibility criteria. A review screened that way cannot claim to have "
+              "applied them.", file=sys.stderr)
+
     batch_label = f"stage={args.stage} rows={args.start}-{args.start + len(records) - 1}"
     prompt = build_screening_prompt(
-        records, stage=args.stage, topic=args.topic, batch_label=batch_label,
+        records, stage=args.stage, topic=args.topic, criteria=criteria,
+        batch_label=batch_label,
     )
 
     out_path = args.out or f"prompt_{args.stage}.txt"
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(prompt)
+
+    # Persist exactly which ids were sent in THIS batch, so `parse` can scope its
+    # id-refusal check to the batch actually sent rather than the whole sheet --
+    # otherwise a hallucinated/echoed id belonging to a different, not-yet-decided
+    # row elsewhere in the sheet would pass validation and get written as if real.
+    ids_path = f"{out_path}.ids.json"
+    with open(ids_path, "w", encoding="utf-8") as f:
+        json.dump([_native(r["id"]) for r in records], f)
 
     print(
         f"wrote {len(records)} record(s) to {out_path} for stage '{args.stage}'.\n"
@@ -128,72 +210,51 @@ def cmd_parse(args: argparse.Namespace) -> int:
 
     response_path = Path(args.response)
     text = response_path.read_text(encoding="utf-8")
-    parsed = parse_screening_response(text)
 
-    df = pd.read_csv(into_path, encoding="utf-8")
-    decision_col = _DECISION_COL[args.stage]
-    reason_col = _REASON_COL[args.stage]
-    # An all-blank column is read as float64 (all-NaN); force object dtype so
-    # writing string decisions/reasons/reviewer values below doesn't raise.
-    for col in (decision_col, reason_col, "reviewer"):
-        if col in df.columns:
-            df[col] = df[col].astype(object)
-
-    id_index: dict[str, int] = {}
-    for idx, v in df["id"].items():
-        id_index[_id_to_str(v)] = idx  # last-wins on duplicate ids in the CSV
+    # Pin the reply to the ids actually SENT in this batch, not every id in the
+    # whole sheet -- otherwise a hallucinated/echoed id belonging to a different,
+    # not-yet-decided row elsewhere in the sheet passes validation unnoticed and
+    # gets written as if the model had genuinely been asked about it.
+    valid_ids = None
+    if args.prompt:
+        ids_path = Path(f"{args.prompt}.ids.json")
+        if ids_path.exists():
+            valid_ids = json.loads(ids_path.read_text(encoding="utf-8"))
+        else:
+            print(f"warning: --prompt given but {ids_path} not found (was it built "
+                  f"with this version of assist.py?) -- falling back to whole-sheet "
+                  f"id validation.", file=sys.stderr)
+    if valid_ids is None:
+        print("warning: no --prompt given, so ids are validated against the WHOLE "
+              "sheet, not just the batch actually sent -- a hallucinated or echoed "
+              "id belonging to a different, undecided row elsewhere in the sheet "
+              "would not be caught. Pass --prompt <the prompt file build wrote> to "
+              "scope this properly.", file=sys.stderr)
+        sheet = pd.read_csv(into_path, encoding="utf-8")
+        valid_ids = list(sheet["id"]) if "id" in sheet.columns else None
+    parsed = parse_screening_response(text, valid_ids=valid_ids)
+    for problem in parsed.problems():
+        print(f"reply check: {problem}", file=sys.stderr)
 
     run_state = None
-    record_key = None
     if args.run:
         try:
-            from srp.state import RunState, record_key as _record_key
+            from srp.state import RunState
             run_state = RunState.load(args.run)
-            record_key = _record_key
-        except ImportError:
-            run_state = None
+        except (ImportError, OSError) as e:
+            print(f"note: could not load run state at {args.run} ({e}) -- decisions will "
+                   f"be written to the CSV but not to the append-only log", file=sys.stderr)
 
-    matched_ids = []
-    unmatched_ids = []
+    phase = run_state.state.get("current_phase", 1) if run_state is not None else 1
+    applied = apply_decisions(into_path, parsed, run_state, phase,
+                               stage=args.stage, overwrite=args.overwrite)
 
-    for rec in parsed:
-        key = str(rec["id"])
-        if key not in id_index:
-            unmatched_ids.append(rec["id"])
-            continue
-
-        idx = id_index[key]
-        df.at[idx, decision_col] = rec["decision"]
-        df.at[idx, reason_col] = rec["reason"]
-        if "reviewer" in df.columns:
-            cur_reviewer = df.at[idx, "reviewer"]
-            if pd.isna(cur_reviewer) or str(cur_reviewer).strip() == "":
-                df.at[idx, "reviewer"] = "ai-assisted"
-        matched_ids.append(rec["id"])
-
-        if run_state is not None:
-            row = df.loc[idx]
-            run_state.record_decision(
-                record_key=record_key(row.get("doi", ""), row.get("title", "")),
-                id=_native(row.get("id")),
-                decision=rec["decision"],
-                stage=args.stage,
-                phase=run_state.state.get("current_phase", 1),
-                reason=rec["reason"],
-                source="manual-paste",
-                title=row.get("title", ""),
-                doi=row.get("doi", ""),
-            )
-
-    df.to_csv(into_path, index=False, encoding="utf-8")
-
-    counts = Counter(rec["decision"] for rec in parsed)
     print(f"parsed {len(parsed)} row(s) from {response_path}")
-    print(f"matched {len(matched_ids)} row(s) into {into_path}")
-    if unmatched_ids:
-        print(f"unmatched ids ({len(unmatched_ids)}): "
-              f"{', '.join(str(x) for x in unmatched_ids)}")
-    print("counts by decision: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    print(f"matched {len(applied.matched)} row(s) into {into_path}")
+    for problem in applied.problems():
+        print(f"apply check: {problem}", file=sys.stderr)
+    print("counts by decision: "
+          + (", ".join(f"{k}={v}" for k, v in sorted(applied.counts.items())) or "(none)"))
     return 0
 
 
@@ -218,15 +279,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
                           help="Row offset into the undecided set (default 0).")
     build_p.add_argument("--topic", default="",
                           help="Review topic line included in the prompt.")
+    build_p.add_argument("--criteria-file", default=None,
+                          help="File holding your protocol's eligibility criteria, applied "
+                               "verbatim in the prompt. Use 'INCLUDE:' and 'EXCLUDE:' "
+                               "section headers to separate them, or pass free text. "
+                               "STRONGLY recommended: without it the prompt asks only for "
+                               "generic relevance, which is not a screening criterion.")
+    build_p.add_argument("--criteria", default="",
+                          help="Eligibility criteria as an inline string (alternative to "
+                               "--criteria-file).")
     build_p.add_argument("--run", default=None,
                           help="Run directory for the cross-phase decided-keys cache "
-                               "(optional; requires srp.state).")
+                               "(optional; requires srp.state). If given, criteria are "
+                               "read from its config.json unless overridden above.")
+    build_p.add_argument("--allow-generic-fallback", action="store_true",
+                          help="Required if none of --criteria / --criteria-file / --run "
+                               "resolve to real eligibility criteria: without this flag, "
+                               "build refuses to write a prompt that would screen on a "
+                               "generic 'plausibly relevant' judgement instead of your "
+                               "protocol's criteria.")
     build_p.set_defaults(func=cmd_build)
 
     parse_p = sub.add_parser(
         "parse", help="Parse a saved chatbot reply into screening.csv decisions.")
     parse_p.add_argument("--response", required=True,
                           help="File containing the pasted-back chatbot reply.")
+    parse_p.add_argument("--prompt", default=None,
+                          help="The prompt file `build` wrote for this exact batch "
+                               "(e.g. prompt_ta.txt). Strongly recommended: without it, "
+                               "ids are validated against the whole sheet rather than just "
+                               "this batch, so a hallucinated/echoed id belonging to a "
+                               "different undecided row would not be caught.")
     parse_p.add_argument("--into", required=True,
                           help="screening.csv to write decisions into.")
     parse_p.add_argument("--stage", choices=["ta", "ft"], required=True,
@@ -234,6 +317,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parse_p.add_argument("--run", default=None,
                           help="Run directory to also log decisions into RunState "
                                "(optional; requires srp.state).")
+    parse_p.add_argument("--overwrite", action="store_true",
+                          help="Replace decisions that are already recorded. Default is to "
+                               "leave them alone: re-parsing a stale reply used to silently "
+                               "overwrite a human's decision while leaving the human's "
+                               "initials on the row.")
     parse_p.set_defaults(func=cmd_parse)
 
     return ap

@@ -84,11 +84,25 @@ def _suffix_for(i: int) -> str:
 
 
 def _escape_bibtex(value) -> str:
+    r"""Escape LaTeX specials in a field value.
+
+    `\`, `~` and `^` were previously unescaped, so a title like
+    "100% \ok" emitted `\ok` -- an undefined control sequence that fails the
+    build on the user's Overleaf project rather than degrading quietly.
+
+    Order matters: the backslash MUST be escaped first, or it would double-escape
+    every replacement made after it. `~` and `^` need the literal-character
+    commands, since `\~` and `\^` alone are accents that swallow the next letter.
+
+    Braces are deliberately NOT escaped: `{Deep}` in a title is BibTeX case
+    protection, which authors add on purpose and which must survive.
+    """
     s = str(value)
-    s = s.replace("&", r"\&")
-    s = s.replace("%", r"\%")
-    s = s.replace("_", r"\_")
-    s = s.replace("#", r"\#")
+    s = s.replace("\\", r"\textbackslash{}")
+    for ch in ("&", "%", "_", "#", "$"):
+        s = s.replace(ch, "\\" + ch)
+    s = s.replace("~", r"\textasciitilde{}")
+    s = s.replace("^", r"\textasciicircum{}")
     return s
 
 
