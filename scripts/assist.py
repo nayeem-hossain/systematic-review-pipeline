@@ -97,6 +97,21 @@ def _native(v):
     return item() if callable(item) else v
 
 
+def _count_undecided(csv_path: Path, decision_col: str) -> int:
+    """Rows in csv_path with no value in decision_col, excluding duplicates --
+    the same filter build applies before slicing a batch, re-applied here so
+    parse can report the same 'how much is left' number after writing."""
+    df = pd.read_csv(csv_path, encoding="utf-8")
+    if df.empty:
+        return 0
+    if "duplicate_of" in df.columns:
+        df = df[df["duplicate_of"].isna()]
+    if decision_col not in df.columns:
+        return len(df)
+    blank = df[decision_col].isna() | (df[decision_col].astype(str).str.strip() == "")
+    return int(blank.sum())
+
+
 def _filter_already_decided(df: pd.DataFrame, run_dir: str, stage: str) -> pd.DataFrame:
     """Drop rows whose record_key is already decided in RunState (cross-phase cache)."""
     try:
@@ -134,6 +149,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"Nothing left to screen for stage {args.stage}.", file=sys.stderr)
         return 0
 
+    total_undecided = len(df)
     batch = df.iloc[args.start: args.start + args.batch_size]
     records = [
         {
@@ -189,8 +205,14 @@ def cmd_build(args: argparse.Namespace) -> int:
     with open(ids_path, "w", encoding="utf-8") as f:
         json.dump([_native(r["id"]) for r in records], f)
 
+    total_batches = -(-total_undecided // args.batch_size) if args.batch_size > 0 else 1
+    batch_num = args.start // args.batch_size + 1 if args.batch_size > 0 else 1
+    remaining_after = max(total_undecided - args.start - len(records), 0)
     print(
-        f"wrote {len(records)} record(s) to {out_path} for stage '{args.stage}'.\n"
+        f"wrote {len(records)} record(s) [rows {args.start + 1}-{args.start + len(records)} of "
+        f"{total_undecided} undecided] to {out_path} for stage '{args.stage}' "
+        f"(batch {batch_num} of {total_batches}; {remaining_after} record(s) will remain "
+        f"undecided after this batch).\n"
         f"Paste this file's contents into your chatbot, then save the reply and run:\n"
         f"  python assist.py parse --response <reply.txt> --into <screening.csv> "
         f"--stage {args.stage}",
@@ -255,6 +277,12 @@ def cmd_parse(args: argparse.Namespace) -> int:
         print(f"apply check: {problem}", file=sys.stderr)
     print("counts by decision: "
           + (", ".join(f"{k}={v}" for k, v in sorted(applied.counts.items())) or "(none)"))
+
+    remaining = _count_undecided(into_path, _DECISION_COL[args.stage])
+    if remaining:
+        print(f"{remaining} record(s) still undecided for stage '{args.stage}' in {into_path}.")
+    else:
+        print(f"All records now decided for stage '{args.stage}' in {into_path}.")
     return 0
 
 

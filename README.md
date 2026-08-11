@@ -537,6 +537,17 @@ Column notes:
   (e.g., a preprint and its camera-ready), merge into one row and note the
   merge in `notes` -- don't keep both as separate synthesis inputs.
 
+`extract.py` only builds the sheet with blank rows; filling it in (and
+correcting a later mistake -- a wrong `R` rating, a typo in `key_findings`)
+is a human step. In the guided path, do this through the consolidation menu's
+**Review/correct an extraction record** action rather than hand-editing the
+CSV: `venue_tier`/`R`/`A`/`T`/`C`/`quality_tier` are edited through a menu so
+an invalid value can't be typed, free-text fields keep their current value as
+the default so pressing Enter never blanks them, and every change is logged
+to `provenance.jsonl` -- unlike a raw CSV edit, which leaves no record of what
+changed or when. Editing R/A/T/C recomputes `quality_tier` automatically per
+Stage 5's formula.
+
 ---
 
 ### Stage 5 -- Quality assessment
@@ -571,17 +582,34 @@ surveys rather than primary evidence.
 
 **Publish an explicit, mechanical aggregation formula, decided before scoring
 begins** -- otherwise a different reviewer applying the same four L/S/H
-ratings can't reproduce the same letter tier. Example rule:
+ratings can't reproduce the same letter tier. This project's formula, implemented
+in `srp/quality_tier.py` and applied automatically by the guided TUI's "Review/
+correct an extraction record" step whenever R/A/T/C are all set:
 
 ```
-L = 2 points, S = 1 point, H = 0 points, per dimension (4 dimensions -> 0-8 raw points)
+L = 2 points, S = 1 point, H = 0 points, per dimension.
 
-7-8 points -> A       5 points -> B+       3 points -> B-
-6 points   -> A-      4 points -> B        0-2 points -> C+/C (split by reviewer
-                                                             judgment on which
-                                                             dimension(s) drove the
-                                                             low score)
+Hard gate first, no compensation: R = H or T = H -> tier is C, full stop --
+a fatal rigor or threat-model gap should not be buyable back by strong
+artifact availability or currency. (A = H / C = H do NOT gate -- missing
+artifacts and stale datasets are common enough in ML-security papers to be
+graded via points, not disqualifying.)
+
+Otherwise, sum all four dimensions (0-8 raw points) and map:
+  7-8 points -> A
+  5-6 points -> B
+  0-4 points -> C
 ```
+
+Three tiers (A/B/C), not a finer A-/B+/B-/C+ scale -- with 4 dimensions x 3
+levels, a 7-bucket scale implies more precision than the inputs support, and
+removes the earlier version's "0-2 points -> C+/C, split by reviewer judgment"
+step entirely: given any R/A/T/C combination there is exactly one correct
+tier, no judgment call left in the formula itself. `quality_tier` can still be
+set by hand for a documented reason -- the guided editor logs that as a
+distinct "manual override" event (with the computed tier it disagreed with)
+rather than letting it silently diverge, and recomputes from the formula again
+the next time any of R/A/T/C is edited.
 
 Publish whatever rule you actually use, before applying it -- not
 reconstructed after the fact to match intuitions.
@@ -1174,6 +1202,28 @@ python scripts/figures.py \
     --outdir figures
 ```
 
+`--screening`/`--dedup`/`--candidates` each read exactly ONE file, and
+`--screening`'s `ft_decision` is read from that same file -- correct for a
+single-phase review (or the worked example above, where one sheet carries
+both `ta_decision` and `ft_decision`). **A guided-TUI run with more than one
+search phase (`n_phases > 1`) needs `--run-dir` instead**, or `identified`/
+`screened`/`excluded_ta` silently undercount (only one phase's files are
+read) and `excluded_ft`/`included` silently read as 0 (`ft_decision` lives in
+the run's `included_final.csv`, never in any single phase's `screening.csv`):
+
+```bash
+python scripts/figures.py --run-dir runs/<run-id> \
+    --quality runs/<run-id>/extraction.csv --outdir figures
+```
+
+This reads every `phase_N/` subdirectory under `--run-dir` plus its
+`included_final.csv` and sums across all of them -- the same logic the
+guided TUI's "Generate PRISMA + tier figures" action already uses
+(`srp/prisma.py`, one shared implementation for both entry points). Either
+way, an unbalanced result (e.g. `included` exceeding `assessed_ft`) prints a
+`PRISMA check:` warning to stderr rather than silently shipping a
+self-contradicting diagram.
+
 Four figures land in `--outdir`:
 
 1. **`prisma_flow.png`/`.pdf`** -- the simplified PRISMA 2020 flow diagram
@@ -1274,6 +1324,21 @@ per script:
   `instrument_columns()` for primary-study extraction-sheet columns,
   `render_review_self_appraisal()` for the review-level checklist file, and
   `compose_appraisal_disclosure()` for the `PROVENANCE.md` paragraph.
+- **`srp/quality_tier.py`** -- `compute_quality_tier()`, the mechanical R/A/T/C
+  aggregation formula from Stage 5 above. Used by the consolidation menu's
+  "Review/correct an extraction record" action to auto-fill `quality_tier`
+  whenever R/A/T/C are all set, and to detect when a hand-set `quality_tier`
+  disagrees with the formula (logged as a manual override, not silently
+  overwritten or silently accepted).
+- **`srp/prisma.py`** -- `derive_prisma_counts_for_run()`, the multi-phase
+  PRISMA-count derivation (sum identified/screened/excluded-ta across every
+  phase, read excluded-ft/included from the run's `included_final.csv`) and
+  `prisma_residuals()`'s balance check. The single implementation behind both
+  `slr.py`'s guided "Generate PRISMA + tier figures" action and
+  `scripts/figures.py --run-dir` (see "Figures" above) -- extracted after
+  the standalone script's own single-sheet derivation was found to silently
+  zero `excluded_ft`/`included` on a real multi-phase run, since it has no
+  way to know `ft_decision` lives in a different file.
 - **`srp/methods_report.py`** -- drafts the search-methods paragraph and its
   supplementary tables from the recorded search-strategy log and PRISMA
   counts (the consolidation menu's "Draft methods paragraph" action).
@@ -1515,7 +1580,11 @@ These are non-negotiable, not best-effort suggestions.
    AI-assisted triage (`scripts/assist.py` included) can propose a decision;
    it cannot be the decision. This applies at both the title/abstract and
    full-text stages -- `slr.py`'s human review gate exists specifically to
-   enforce this in the guided path.
+   enforce this in the guided path. Both the review gate and full-text
+   screening mechanically refuse to mark themselves complete -- and the
+   pipeline's resume pointer refuses to advance past them -- while any record
+   still has no decision, with no override; the phase cannot silently move on
+   with records left unaccounted for.
 3. **Verify every downloaded PDF's title page against its expected title
    before extraction.** Automated resolution (`scripts/download.py`) can fetch the
    wrong file -- a similarly-titled paper, or a landing page mislabeled as a

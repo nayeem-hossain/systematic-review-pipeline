@@ -111,7 +111,7 @@ class TestProvenanceCoverage:
         "_menu_merge", "_menu_download", "_menu_full_text_screening",
         "_menu_verify_citations", "_menu_extract", "_menu_figures",
         "_menu_export_refs", "_menu_export_exclusions", "_menu_kappa",
-        "_menu_review_self_appraisal",
+        "_menu_review_self_appraisal", "_menu_review_extraction",
     ])
     def test_action_takes_provenance_and_logs(self, func):
         import inspect
@@ -345,6 +345,229 @@ class TestAiAssistRefusesGenericFallback:
         assert list(pdir.glob("prompt_ta_*.txt")), "override was granted -- a prompt should exist"
 
 
+class TestAiAssistLoopReportsProgress:
+    """run_ai_assist_loop used to show only 'batch of N', with no indication of
+    how many undecided records exist in total or will remain after this batch --
+    a user who just finished pasting one 20-row batch had no way to tell whether
+    another batch was waiting or that was the whole corpus."""
+
+    def _setup(self, tmp_path, n=3):
+        cfg = ReviewConfig(topic="ML-IDS", mailto="a@b.c",
+                            inclusion_criteria="peer-reviewed", exclusion_criteria="survey")
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        pdir = tmp_path / "phase_1"
+        pdir.mkdir()
+        ids = list(range(1, n + 1))
+        pd.DataFrame({
+            "id": ids, "title": [f"Study {i}" for i in ids], "abstract": ["abc"] * n,
+            "year": [2021] * n, "venue": ["V"] * n, "doi": [""] * n,
+        }).to_csv(pdir / "candidates_dedup.csv", index=False)
+        pd.DataFrame({
+            "id": ids, "title": [f"Study {i}" for i in ids], "doi": [""] * n,
+            "ta_decision": [""] * n, "ta_reason": [""] * n,
+            "ft_decision": [""] * n, "ft_reason": [""] * n, "reviewer": [""] * n,
+        }).to_csv(pdir / "screening.csv", index=False)
+        return cfg, st, prov, pdir
+
+    def _fake(self, answer):
+        return type("F", (), {"ask": lambda self: answer})()
+
+    def test_batch_panel_shows_total_undecided_and_remaining(self, tmp_path, monkeypatch):
+        cfg, st, prov, pdir = self._setup(tmp_path, n=3)
+        monkeypatch.setattr(slr, "_BATCH_SIZE", 2)
+        console = Console(file=io.StringIO())
+
+        monkeypatch.setattr(slr.questionary, "confirm", lambda *a, **kw: self._fake(False))
+        monkeypatch.setattr(
+            slr.questionary, "select",
+            lambda *a, **kw: self._fake("Stop AI-assist screening for this phase"))
+
+        slr.run_ai_assist_loop(st, cfg, prov, 1, pdir, console)
+
+        text = console.file.getvalue()
+        assert "3" in text and "undecided" in text
+        assert "1" in text  # 1 record(s) will remain undecided after this batch of 2
+
+    def test_after_parsing_a_batch_reports_updated_remaining_count(self, tmp_path, monkeypatch):
+        cfg, st, prov, pdir = self._setup(tmp_path, n=3)
+        monkeypatch.setattr(slr, "_BATCH_SIZE", 2)
+        console = Console(file=io.StringIO())
+
+        def fake_confirm(prompt, default=False):
+            if "Screen another batch" in prompt:
+                return self._fake(False)  # stop after the first batch
+            return self._fake(default)
+
+        def fake_select(prompt, choices):
+            return self._fake(choices[0])  # "I've pasted it and saved the reply..."
+
+        def fake_text(prompt, default=""):
+            if "Path to the chatbot reply file" in prompt:
+                Path(default).write_text(
+                    "1 | INCLUDE | on-topic\n2 | EXCLUDE | off-topic", encoding="utf-8")
+            return self._fake(default)
+
+        monkeypatch.setattr(slr.questionary, "confirm", fake_confirm)
+        monkeypatch.setattr(slr.questionary, "select", fake_select)
+        monkeypatch.setattr(slr.questionary, "text", fake_text)
+
+        slr.run_ai_assist_loop(st, cfg, prov, 1, pdir, console)
+
+        df = pd.read_csv(pdir / "screening.csv")
+        assert df.loc[df["id"] == 1, "ta_decision"].iloc[0] == "include"
+        text = console.file.getvalue()
+        assert "1 record(s) still undecided" in text
+
+
+class TestReviewExtractionMenu:
+    """_menu_review_extraction is the guided, one-record-at-a-time editor for
+    extraction.csv -- R/A/T/C and venue_tier are edited through a select menu
+    so an invalid value cannot be typed, free-text fields are edited with the
+    current value as the default so pressing Enter never blanks them, every
+    change is logged to provenance (there was previously no audit trail for
+    hand-edited extraction data), and quality_tier auto-recomputes from
+    R/A/T/C via compute_quality_tier() unless manually overridden, which is
+    logged as a distinct event rather than silently diverging."""
+
+    def _setup(self, tmp_path, quality_tier=""):
+        cfg = ReviewConfig(topic="t", mailto="a@b.c", reviewer="AB")
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        pd.DataFrame({
+            "id": [1], "title": ["Study One"], "authors": [""], "year": [2021],
+            "venue": ["V"], "doi": [""],
+            "thematic_class": [""], "study_type": [""], "contribution": [""],
+            "key_findings": [""], "rq_mapping": [""], "limitations": [""],
+            "venue_tier": [""], "R": [""], "A": [""], "T": [""], "C": [""],
+            "quality_tier": [quality_tier],
+            "extraction_reviewer": [""], "extraction_date": [""], "notes": [""],
+        }).to_csv(st.run_dir / "extraction.csv", index=False)
+        return cfg, st, prov
+
+    def _fake(self, answer):
+        return type("F", (), {"ask": lambda self: answer})()
+
+    def _sequence(self, answers):
+        it = iter(answers)
+        return lambda *a, **kw: self._fake(next(it))
+
+    def test_missing_extraction_csv_prints_guidance(self, tmp_path):
+        cfg = ReviewConfig(topic="t", mailto="a@b.c")
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        console = Console(file=io.StringIO())
+
+        slr._menu_review_extraction(st, cfg, prov, console)
+
+        assert "extraction" in console.file.getvalue().lower()
+
+    def test_unknown_study_id_reports_error_and_reprompts(self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._sequence(["999", ""]))
+
+        slr._menu_review_extraction(st, cfg, prov, console)
+
+        assert "no study" in console.file.getvalue().lower()
+
+    def test_editing_a_constrained_field_writes_value_and_logs(self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._sequence(["1", ""]))
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence(["venue_tier", "T1", "Done with this study"]))
+
+        slr._menu_review_extraction(st, cfg, prov, console)
+
+        df = pd.read_csv(st.run_dir / "extraction.csv")
+        assert df.loc[0, "venue_tier"] == "T1"
+        events = [e for e in prov.events() if e["event"] == "extraction_field_edited"]
+        assert events and events[0]["field"] == "venue_tier" and events[0]["new_value"] == "T1"
+
+    def test_free_text_field_edit_is_written_and_logged(self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._sequence(
+            ["1", "A convolutional IDS approach.", ""]))
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence(["contribution", "Done with this study"]))
+
+        slr._menu_review_extraction(st, cfg, prov, console)
+
+        df = pd.read_csv(st.run_dir / "extraction.csv")
+        assert df.loc[0, "contribution"] == "A convolutional IDS approach."
+        events = [e for e in prov.events() if e["event"] == "extraction_field_edited"]
+        assert events and events[0]["field"] == "contribution"
+
+    def test_pressing_enter_on_free_text_leaves_it_unchanged_and_does_not_log(
+            self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path)
+        console = Console(file=io.StringIO())
+        study_id_calls = {"n": 0}
+
+        def fake_text(prompt, default=""):
+            if "Study id" in prompt:
+                study_id_calls["n"] += 1
+                return self._fake("1" if study_id_calls["n"] == 1 else "")
+            return self._fake(default)  # Enter -> keep current value
+
+        monkeypatch.setattr(slr.questionary, "text", fake_text)
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence(["contribution", "Done with this study"]))
+
+        slr._menu_review_extraction(st, cfg, prov, console)
+
+        df = pd.read_csv(st.run_dir / "extraction.csv")
+        assert df.loc[0, "contribution"] == "" or pd.isna(df.loc[0, "contribution"])
+        assert not [e for e in prov.events() if e["event"] == "extraction_field_edited"]
+
+    def test_completing_ratc_autocomputes_quality_tier(self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._sequence(["1", ""]))
+        monkeypatch.setattr(slr.questionary, "select", self._sequence([
+            "R", "L", "A", "L", "T", "L", "C", "L", "Done with this study",
+        ]))
+
+        slr._menu_review_extraction(st, cfg, prov, console)
+
+        df = pd.read_csv(st.run_dir / "extraction.csv")
+        assert df.loc[0, "quality_tier"] == "A"
+        events = [e for e in prov.events() if e["event"] == "quality_tier_recomputed"]
+        assert events and events[-1]["quality_tier"] == "A"
+
+    def test_manual_quality_tier_override_is_logged_distinctly(self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._sequence(["1", ""]))
+        monkeypatch.setattr(slr.questionary, "select", self._sequence([
+            "R", "L", "A", "L", "T", "L", "C", "L",   # computed -> A
+            "quality_tier", "B",                       # manual override -> B
+            "Done with this study",
+        ]))
+
+        slr._menu_review_extraction(st, cfg, prov, console)
+
+        df = pd.read_csv(st.run_dir / "extraction.csv")
+        assert df.loc[0, "quality_tier"] == "B"
+        events = [e for e in prov.events() if e["event"] == "quality_tier_manual_override"]
+        assert events and events[0]["computed"] == "A" and events[0]["override"] == "B"
+
+    def test_reviewer_and_date_stamped_on_edit(self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._sequence(["1", ""]))
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence(["venue_tier", "T2", "Done with this study"]))
+
+        slr._menu_review_extraction(st, cfg, prov, console)
+
+        df = pd.read_csv(st.run_dir / "extraction.csv")
+        assert df.loc[0, "extraction_reviewer"] == "AB"
+        assert str(df.loc[0, "extraction_date"]).strip() != ""
+
+
 class TestReviewGatePreviewBeforeFlip:
     """A mistyped id landing on a DIFFERENT valid id already in the same list
     used to be applied silently -- only an aggregate count was shown afterward.
@@ -433,6 +656,134 @@ class TestReviewGatePreviewBeforeFlip:
         slr.run_review_gate(st, cfg, prov, 1, pdir, console)
 
         assert "999" in console.file.getvalue()
+
+
+class TestReviewGateBlocksOnUndecidedRows:
+    """run_review_gate used to call state.mark_stage() unconditionally, so a
+    phase could be marked 'done' -- and the pipeline's resume pointer could
+    advance past it -- while most of its screening.csv was still blank. Only
+    the AI-assist loop had this guard (it refuses to mark assist_ta done while
+    undecided rows remain); the review gate itself had none. This mirrors that
+    same guard: no override, matching assist_ta's own pattern exactly."""
+
+    def _setup(self, tmp_path, decisions):
+        cfg = ReviewConfig(topic="t", mailto="a@b.c")
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        pdir = tmp_path / "phase_1"
+        pdir.mkdir()
+        pd.DataFrame({
+            "id": range(1, len(decisions) + 1),
+            "title": [f"P{i}" for i in range(len(decisions))],
+            "doi": [""] * len(decisions),
+            "year": [2020] * len(decisions), "venue": ["V"] * len(decisions),
+            "ta_decision": decisions,
+            "ta_reason": [""] * len(decisions), "reviewer": ["ai-assisted"] * len(decisions),
+        }).to_csv(pdir / "screening.csv", index=False)
+        return cfg, st, prov, pdir
+
+    def _fake(self, answer):
+        return type("F", (), {"ask": lambda self: answer})()
+
+    def _fake_text_sequence(self, answers):
+        it = iter(answers)
+        return lambda prompt, default="": self._fake(next(it))
+
+    def test_undecided_rows_leave_the_stage_unmarked(self, tmp_path, monkeypatch):
+        cfg, st, prov, pdir = self._setup(tmp_path, ["include", "exclude", ""])
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._fake_text_sequence(["", ""]))
+        monkeypatch.setattr(slr.questionary, "confirm", lambda *a, **kw: self._fake(True))
+
+        slr.run_review_gate(st, cfg, prov, 1, pdir, console)
+
+        assert st.stage_status(1, "review_gate") != "done"
+
+    def test_undecided_rows_show_a_warning(self, tmp_path, monkeypatch):
+        cfg, st, prov, pdir = self._setup(tmp_path, ["include", "exclude", "", ""])
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._fake_text_sequence(["", ""]))
+        monkeypatch.setattr(slr.questionary, "confirm", lambda *a, **kw: self._fake(True))
+
+        slr.run_review_gate(st, cfg, prov, 1, pdir, console)
+
+        text = console.file.getvalue().lower()
+        assert "2" in text and "not marked complete" in text
+
+    def test_undecided_rows_log_a_provenance_event(self, tmp_path, monkeypatch):
+        cfg, st, prov, pdir = self._setup(tmp_path, ["include", ""])
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._fake_text_sequence(["", ""]))
+        monkeypatch.setattr(slr.questionary, "confirm", lambda *a, **kw: self._fake(True))
+
+        slr.run_review_gate(st, cfg, prov, 1, pdir, console)
+
+        events = [e for e in prov.events() if e["event"] == "review_gate_incomplete"]
+        assert events and events[0]["n_undecided"] == 1
+
+    def test_fully_decided_sheet_still_marks_the_stage_done(self, tmp_path, monkeypatch):
+        """Regression guard: the new check must not accidentally block the
+        already-working, fully-decided case."""
+        cfg, st, prov, pdir = self._setup(tmp_path, ["include", "exclude", "include"])
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "text", self._fake_text_sequence(["", ""]))
+        monkeypatch.setattr(slr.questionary, "confirm", lambda *a, **kw: self._fake(True))
+
+        slr.run_review_gate(st, cfg, prov, 1, pdir, console)
+
+        assert st.stage_status(1, "review_gate") == "done"
+
+
+class TestFullTextScreeningBlocksOnUndecidedRows:
+    """Same gap, second instance: _menu_full_text_screening marked itself done
+    unconditionally too."""
+
+    def _setup(self, tmp_path, ft_decisions):
+        cfg = ReviewConfig(topic="t", mailto="a@b.c", n_phases=1)
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        n = len(ft_decisions)
+        pd.DataFrame({
+            "id": range(1, n + 1), "title": [f"P{i}" for i in range(n)],
+            "doi": [""] * n, "authors": [""] * n, "year": [2020] * n, "venue": ["V"] * n,
+            "url": [""] * n, "ta_decision": ["include"] * n, "ta_reason": [""] * n,
+            "ft_decision": ft_decisions, "ft_reason": [""] * n,
+        }).to_csv(st.run_dir / "included_final.csv", index=False)
+        return cfg, st, prov
+
+    def _fake(self, answer):
+        return type("F", (), {"ask": lambda self: answer})()
+
+    def test_undecided_rows_leave_the_stage_unmarked(self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path, ["include", "exclude", ""])
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(
+            slr.questionary, "select",
+            lambda *a, **kw: self._fake("stop for now"))
+
+        slr._menu_full_text_screening(st, cfg, prov, console)
+
+        assert st.stage_status(1, "full_text_screening") != "done"
+
+    def test_undecided_rows_log_a_provenance_event(self, tmp_path, monkeypatch):
+        cfg, st, prov = self._setup(tmp_path, ["include", ""])
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(
+            slr.questionary, "select",
+            lambda *a, **kw: self._fake("stop for now"))
+
+        slr._menu_full_text_screening(st, cfg, prov, console)
+
+        events = [e for e in prov.events() if e["event"] == "full_text_screening_incomplete"]
+        assert events and events[0]["n_undecided"] == 1
+
+    def test_fully_decided_sheet_marks_the_stage_done(self, tmp_path):
+        cfg, st, prov = self._setup(tmp_path, ["include", "exclude"])
+        console = Console(file=io.StringIO())
+
+        slr._menu_full_text_screening(st, cfg, prov, console)
+
+        assert st.stage_status(1, "full_text_screening") == "done"
 
 
 class TestMainHandlesCorruptCsv:

@@ -74,6 +74,7 @@ import os as _os, sys as _sys  # noqa: E402
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 from srp.decisions import TA_PROCEED_DECISIONS  # noqa: E402
+from srp.prisma import PhaseFrames, derive_prisma_counts_for_run, prisma_residuals  # noqa: E402
 
 DPI = 300
 
@@ -93,7 +94,7 @@ FINAL_FILL = "#cde2fb"        # a shade darker -- highlights the terminal "Inclu
 ORDINAL_BLUE = ["#184f95", "#3987e5", "#86b6ef"]  # dark -> light, best -> weakest tier
 
 
-def _read_csv_or_empty(path: Optional[str], **kwargs) -> pd.DataFrame:
+def _read_csv_or_empty(path: "Optional[str | Path]", **kwargs) -> pd.DataFrame:
     if not path:
         return pd.DataFrame()
     p = Path(path)
@@ -145,6 +146,35 @@ def derive_prisma_counts(candidates: pd.DataFrame, dedup: pd.DataFrame,
         "included": included,
         "ft_reasons": ft_reasons,
     }
+
+
+def _discover_run_dir(run_dir: Path):
+    """Standalone counterpart to slr.py's state.phase_dir() loop, for a plain
+    run directory on disk with no RunState/ReviewConfig object -- read every
+    phase_N/ subdirectory's candidates/candidates_dedup/screening CSVs, plus
+    the run-level included_final.csv where ft_decision actually lives (never
+    in any single phase's own screening.csv). Returns (phases, included_final)
+    for srp.prisma.derive_prisma_counts_for_run. Missing/empty run_dir yields
+    no phases rather than an error -- consistent with _read_csv_or_empty's
+    "absent means empty" convention elsewhere in this file."""
+    def _phase_num(p: Path) -> int:
+        suffix = p.name.split("_", 1)[1] if "_" in p.name else ""
+        return int(suffix) if suffix.isdigit() else 0
+
+    phase_dirs = sorted(
+        (p for p in run_dir.glob("phase_*") if p.is_dir()),
+        key=_phase_num,
+    )
+    phases = [
+        PhaseFrames(
+            candidates=_read_csv_or_empty(p / "candidates.csv"),
+            dedup=_read_csv_or_empty(p / "candidates_dedup.csv"),
+            screening=_read_csv_or_empty(p / "screening.csv"),
+        )
+        for p in phase_dirs
+    ]
+    included_final = _read_csv_or_empty(run_dir / "included_final.csv")
+    return phases, included_final
 
 
 def _reason_block_lines(ft_reasons: dict, max_reasons: int = 3,
@@ -591,6 +621,17 @@ def main():
     ap.add_argument("--screening", default="output/screening.csv")
     ap.add_argument("--dedup", default="output/candidates_dedup.csv")
     ap.add_argument("--candidates", default="output/candidates.csv")
+    ap.add_argument("--run-dir", default=None,
+                     help="Run directory (e.g. runs/<id>) to derive PRISMA counts from "
+                          "instead of --screening/--dedup/--candidates: reads every "
+                          "phase_N/ subdirectory plus included_final.csv (where "
+                          "ft_decision actually lives) and sums across all of them. Use "
+                          "this for a real multi-phase guided-TUI run -- "
+                          "--screening/--dedup/--candidates only ever read ONE phase's "
+                          "files each, so a multi-phase run's identified/screened/"
+                          "excluded_ta would silently undercount without it, and "
+                          "excluded_ft/included would read the wrong file entirely "
+                          "(ft_decision is never in a phase's own screening.csv).")
     ap.add_argument("--quality", default="output/extraction.csv",
                      help="Extraction CSV with quality_tier / venue_tier columns")
     ap.add_argument("--outdir", default="figures")
@@ -614,12 +655,19 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    candidates = _read_csv_or_empty(args.candidates)
-    dedup = _read_csv_or_empty(args.dedup)
-    screening = _read_csv_or_empty(args.screening)
     quality = _read_csv_or_empty(args.quality)
 
-    counts = derive_prisma_counts(candidates, dedup, screening)
+    if args.run_dir:
+        print(f"--run-dir given: deriving PRISMA counts from every phase_N/ "
+              f"subdirectory of {args.run_dir} plus included_final.csv "
+              f"(ignoring --screening/--dedup/--candidates for this).")
+        phases, included_final = _discover_run_dir(Path(args.run_dir))
+        counts = derive_prisma_counts_for_run(phases, included_final)
+    else:
+        candidates = _read_csv_or_empty(args.candidates)
+        dedup = _read_csv_or_empty(args.dedup)
+        screening = _read_csv_or_empty(args.screening)
+        counts = derive_prisma_counts(candidates, dedup, screening)
 
     overrides = {
         "identified": args.identified,
@@ -639,6 +687,9 @@ def main():
                 "assessed_ft", "excluded_ft", "included"):
         source = "override" if overrides.get(key) is not None else "derived"
         print(f"  {key:<20} {counts[key]:>6}   ({source})")
+
+    for warning in prisma_residuals(counts):
+        print(f"PRISMA check: {warning}", file=_sys.stderr)
 
     draw_prisma_flow(counts, outdir)
     print(f"wrote {outdir / 'prisma_flow.png'} and {outdir / 'prisma_flow.pdf'}")

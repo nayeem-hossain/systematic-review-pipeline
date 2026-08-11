@@ -162,3 +162,86 @@ class TestParseIdScoping:
             "--stage", "ta", "--prompt", str(prompt_path),
         ])
         assert cmd_parse(args) == 0
+
+
+class TestBuildReportsRemainingCount:
+    """build used to print only 'wrote N record(s)...', with no indication of how
+    many undecided rows exist in total or will be left after this batch -- a user
+    who just pasted one 20-row batch had no way to tell whether another batch was
+    waiting or that was the whole corpus."""
+
+    def test_message_shows_total_undecided_and_remaining_after_batch(self, tmp_path, capsys):
+        candidates = tmp_path / "candidates_dedup.csv"
+        pd.DataFrame({
+            "id": [1, 2, 3, 4], "title": ["A", "B", "C", "D"],
+            "abstract": ["x", "y", "z", "w"], "year": [2020] * 4, "venue": ["V"] * 4,
+        }).to_csv(candidates, index=False)
+        out = tmp_path / "prompt_ta.txt"
+
+        ap = build_arg_parser()
+        args = ap.parse_args([
+            "build", "--in", str(candidates), "--stage", "ta",
+            "--out", str(out), "--batch-size", "2", "--start", "0",
+            "--criteria", "must report quantitative results",
+        ])
+        assert cmd_build(args) == 0
+        err = capsys.readouterr().err
+        assert "2 of 4 undecided" in err
+        assert "2 record(s) will remain" in err
+
+    def test_final_batch_reports_zero_remaining(self, tmp_path, capsys):
+        candidates = tmp_path / "candidates_dedup.csv"
+        pd.DataFrame({
+            "id": [1, 2], "title": ["A", "B"], "abstract": ["x", "y"],
+            "year": [2020, 2021], "venue": ["V", "W"],
+        }).to_csv(candidates, index=False)
+        out = tmp_path / "prompt_ta.txt"
+
+        ap = build_arg_parser()
+        args = ap.parse_args([
+            "build", "--in", str(candidates), "--stage", "ta",
+            "--out", str(out), "--batch-size", "20", "--start", "0",
+            "--criteria", "must report quantitative results",
+        ])
+        assert cmd_build(args) == 0
+        err = capsys.readouterr().err
+        assert "0 record(s) will remain" in err
+
+
+class TestParseReportsRemainingCount:
+    """parse used to print counts-by-decision for the batch just applied, but never
+    said how many rows in the sheet still have no decision -- the same 'is there
+    more to do' gap as build."""
+
+    def test_reports_how_many_still_undecided_after_applying(self, tmp_path, capsys):
+        screening = _sheet(tmp_path, {
+            "id": [1, 2, 3], "title": ["A", "B", "C"],
+            "ta_decision": ["", "", ""], "ta_reason": ["", "", ""],
+            "ft_decision": ["", "", ""], "ft_reason": ["", "", ""], "reviewer": ["", "", ""],
+        })
+        reply = tmp_path / "reply.txt"
+        reply.write_text("1 | INCLUDE | on-topic", encoding="utf-8")
+
+        ap = build_arg_parser()
+        args = ap.parse_args([
+            "parse", "--response", str(reply), "--into", str(screening), "--stage", "ta",
+        ])
+        assert cmd_parse(args) == 0
+        out = capsys.readouterr().out
+        assert "2 record(s) still undecided" in out
+
+    def test_reports_all_decided_when_nothing_left(self, tmp_path, capsys):
+        screening = _sheet(tmp_path, {
+            "id": [1], "title": ["A"], "ta_decision": [""], "ta_reason": [""],
+            "ft_decision": [""], "ft_reason": [""], "reviewer": [""],
+        })
+        reply = tmp_path / "reply.txt"
+        reply.write_text("1 | INCLUDE | on-topic", encoding="utf-8")
+
+        ap = build_arg_parser()
+        args = ap.parse_args([
+            "parse", "--response", str(reply), "--into", str(screening), "--stage", "ta",
+        ])
+        assert cmd_parse(args) == 0
+        out = capsys.readouterr().out
+        assert "All records now decided" in out

@@ -7,9 +7,10 @@ import pytest
 
 from conftest import make_candidates
 from figures import (derive_prisma_counts, _normalize_venue_tier,
-                      _normalize_quality_tier)
+                      _normalize_quality_tier, _discover_run_dir)
 import slr
 from srp.config import ReviewConfig
+from srp.prisma import PhaseFrames, derive_prisma_counts_for_run
 from srp.state import RunState
 
 
@@ -132,6 +133,149 @@ class TestCrossPhaseCounts:
         assert c["included"] == 2
         assert c["excluded_ft"] == 2
         assert c["ft_reasons"] == {"no empirical data": 1, "wrong population": 1}
+
+
+class TestPrismaModule:
+    """srp.prisma.derive_prisma_counts_for_run is the single multi-phase
+    implementation, extracted out of slr.py so it can also be reached from
+    scripts/figures.py's standalone --run-dir mode -- see srp/decisions.py's
+    docstring for why a second copy of this kind of logic is a bug waiting to
+    happen (that fix already happened once, for AI-decision ingestion)."""
+
+    def test_sums_identified_and_screened_across_phases(self):
+        phases = [
+            PhaseFrames(
+                candidates=pd.DataFrame({"id": range(1, 6)}),
+                dedup=pd.DataFrame({"id": range(1, 6), "duplicate_of": [None] * 5}),
+                screening=pd.DataFrame({"ta_decision": ["include", "exclude", "", "", ""]}),
+            ),
+            PhaseFrames(
+                candidates=pd.DataFrame({"id": range(1, 4)}),
+                dedup=pd.DataFrame({"id": range(1, 4), "duplicate_of": [None, None, 1]}),
+                screening=pd.DataFrame({"ta_decision": ["include", "maybe"]}),
+            ),
+        ]
+        c = derive_prisma_counts_for_run(phases, pd.DataFrame())
+        assert c["identified"] == 8
+        assert c["duplicates_removed"] == 1
+        assert c["screened"] == 7
+        assert c["excluded_ta"] == 1
+        assert c["assessed_ft"] == 3  # 1 include (phase 1) + 1 include + 1 maybe (phase 2)
+
+    def test_excluded_ft_and_included_come_from_included_final_not_any_phase_screening(self):
+        """This is the exact bug this module exists to prevent: ft_decision
+        lives in the run-level included_final.csv, never in a phase's own
+        screening.csv -- a phase screening sheet with an ft_decision-shaped
+        column must NOT be read for this."""
+        phases = [PhaseFrames(
+            candidates=pd.DataFrame({"id": [1, 2]}),
+            dedup=pd.DataFrame({"id": [1, 2], "duplicate_of": [None, None]}),
+            screening=pd.DataFrame({
+                "ta_decision": ["include", "include"],
+                "ft_decision": ["exclude", "exclude"],  # must be ignored -- wrong file
+            }),
+        )]
+        included_final = pd.DataFrame({
+            "ft_decision": ["include", "exclude"],
+            "ft_reason": ["", "wrong population"],
+        })
+        c = derive_prisma_counts_for_run(phases, included_final)
+        assert c["included"] == 1
+        assert c["excluded_ft"] == 1
+        assert c["ft_reasons"] == {"wrong population": 1}
+
+    def test_empty_included_final_yields_zero_not_a_crash(self):
+        phases = [PhaseFrames(
+            candidates=pd.DataFrame({"id": [1]}),
+            dedup=pd.DataFrame({"id": [1], "duplicate_of": [None]}),
+            screening=pd.DataFrame({"ta_decision": ["include"]}),
+        )]
+        c = derive_prisma_counts_for_run(phases, pd.DataFrame())
+        assert c["excluded_ft"] == 0 and c["included"] == 0
+
+    def test_no_phases_yields_all_zeros(self):
+        c = derive_prisma_counts_for_run([], pd.DataFrame())
+        assert c["identified"] == 0 and c["screened"] == 0
+
+
+class TestFiguresRunDirDiscovery:
+    """_discover_run_dir is scripts/figures.py's standalone --run-dir
+    counterpart to slr.py's state.phase_dir() loop: it must find the same
+    phases and the same included_final.csv from a plain run directory on
+    disk, with no RunState/ReviewConfig object required, since figures.py is
+    meant to stay usable without the guided TUI."""
+
+    def _make_run_dir(self, tmp_path, n_phases=2):
+        run_dir = tmp_path / "run1"
+        for phase in range(1, n_phases + 1):
+            pdir = run_dir / f"phase_{phase}"
+            pdir.mkdir(parents=True)
+            pd.DataFrame({"id": [1, 2]}).to_csv(pdir / "candidates.csv", index=False)
+            pd.DataFrame({"id": [1, 2], "duplicate_of": [None, None]}).to_csv(
+                pdir / "candidates_dedup.csv", index=False)
+            pd.DataFrame({"ta_decision": ["include", "exclude"]}).to_csv(
+                pdir / "screening.csv", index=False)
+        pd.DataFrame({"ft_decision": ["include", "exclude"],
+                      "ft_reason": ["", "off-topic"]}).to_csv(
+            run_dir / "included_final.csv", index=False)
+        return run_dir
+
+    def test_finds_every_phase_dir_in_numeric_order(self, tmp_path):
+        run_dir = self._make_run_dir(tmp_path, n_phases=3)
+        phases, _ = _discover_run_dir(run_dir)
+        assert len(phases) == 3
+        assert all(len(p.candidates) == 2 for p in phases)
+
+    def test_reads_included_final_for_ft_decision(self, tmp_path):
+        run_dir = self._make_run_dir(tmp_path, n_phases=1)
+        _, included_final = _discover_run_dir(run_dir)
+        assert list(included_final["ft_decision"]) == ["include", "exclude"]
+
+    def test_missing_run_dir_yields_no_phases_not_a_crash(self, tmp_path):
+        phases, included_final = _discover_run_dir(tmp_path / "does-not-exist")
+        assert phases == []
+        assert included_final.empty
+
+    def test_ten_or_more_phases_sort_numerically_not_lexicographically(self, tmp_path):
+        run_dir = tmp_path / "run1"
+        for phase in (1, 2, 10):
+            pdir = run_dir / f"phase_{phase}"
+            pdir.mkdir(parents=True)
+            pd.DataFrame({"id": [phase]}).to_csv(pdir / "candidates.csv", index=False)
+            pd.DataFrame({"id": [phase], "duplicate_of": [None]}).to_csv(
+                pdir / "candidates_dedup.csv", index=False)
+            pd.DataFrame({"ta_decision": ["include"]}).to_csv(pdir / "screening.csv", index=False)
+        phases, _ = _discover_run_dir(run_dir)
+        assert [p.candidates["id"].iloc[0] for p in phases] == [1, 2, 10]
+
+
+class TestRunDirCrossCheck:
+    """The whole point of --run-dir: figures.py's standalone discovery must
+    produce EXACTLY the counts slr._compute_prisma_counts (the guided TUI's
+    already-correct path) produces for the identical on-disk run -- this is
+    the tripwire that would have caught the original bug (figures.py run
+    standalone on a real multi-phase run silently zeroing excluded_ft/included)."""
+
+    def test_run_dir_agrees_with_tui_computed_counts(self, tmp_path):
+        st, cfg = build_run(tmp_path, 2, [
+            (10, 2, ["include"] * 4 + ["exclude"] * 4),
+            (8, 1, ["include"] * 3 + ["maybe"] + ["exclude"] * 3),
+        ])
+        merged = slr._ensure_merged(st, cfg, _NullConsole(), force=True)
+        merged["ft_decision"] = ["include", "exclude"] * (len(merged) // 2) \
+            + (["include"] if len(merged) % 2 else [])
+        merged["ft_reason"] = ["", "off-topic"] * (len(merged) // 2) \
+            + ([""] if len(merged) % 2 else [])
+        merged.to_csv(st.run_dir / "included_final.csv", index=False)
+
+        tui_counts = slr._compute_prisma_counts(st, cfg)
+
+        phases, included_final = _discover_run_dir(st.run_dir)
+        standalone_counts = derive_prisma_counts_for_run(phases, included_final)
+
+        for key in ("identified", "duplicates_removed", "screened", "excluded_ta",
+                    "assessed_ft", "excluded_ft", "included"):
+            assert standalone_counts[key] == tui_counts[key], key
 
 
 class TestTierNormalizers:

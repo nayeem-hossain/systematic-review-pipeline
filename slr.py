@@ -36,6 +36,7 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -62,7 +63,9 @@ from srp.config import ReviewConfig
 from srp.decisions import AI_REVIEWER, apply_decisions, pick_progressed, ta_proceeds_mask
 from srp.methods_report import (PhaseSearchRecord, SourceStrategyRow,
                                  render_search_methods, render_search_strategy_table)
+from srp.prisma import PhaseFrames, derive_prisma_counts_for_run, prisma_residuals
 from srp.provenance import Provenance
+from srp.quality_tier import compute_quality_tier
 from srp.state import RunState, record_key
 from srp import llm_assist
 from srp import export as srp_export
@@ -847,6 +850,7 @@ def run_ai_assist_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, pha
             console.print("[green]No undecided studies left for TA screening in this phase.[/]")
             break
 
+        total_undecided = len(undecided_rows)
         batch = undecided_rows[:_BATCH_SIZE]
         start = len(dedup_df) - len(undecided_rows)
         records = [
@@ -854,6 +858,8 @@ def run_ai_assist_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, pha
              "year": row.get("year", ""), "venue": row.get("venue", "")}
             for row in batch
         ]
+        remaining_after = total_undecided - len(records)
+        total_batches = -(-total_undecided // _BATCH_SIZE)
         batch_label = f"phase={phase} stage=ta rows={start}-{start + len(records) - 1}"
         prompt = llm_assist.build_screening_prompt(
             records, stage="ta", topic=cfg.topic, criteria=criteria,
@@ -869,6 +875,9 @@ def run_ai_assist_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, pha
             default_reply.write_text("", encoding="utf-8")
 
         console.print(Panel(
+            f"{total_undecided} record(s) undecided for TA screening in phase {phase} "
+            f"({total_batches} batch(es) including this one). This batch covers "
+            f"{len(records)}, leaving {remaining_after} undecided after it.\n\n"
             f"Paste the contents of [bold]{prompt_path}[/] into [bold]{tool_name}[/].\n"
             f"An empty reply file is already waiting at [bold]{default_reply}[/] -- paste "
             f"the chatbot's answer into it and save (one line per study, e.g.\n"
@@ -956,6 +965,10 @@ def run_ai_assist_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, pha
             n_include=applied.counts.get("include", 0), n_exclude=applied.counts.get("exclude", 0),
             tool=cfg.assist_tool_name,
         )
+
+        remaining_now = len(_undecided_ta_ids(screening_path) - skipped_ids)
+        console.print(f"[dim]{remaining_now} record(s) still undecided for TA screening "
+                      f"in phase {phase}.[/]")
 
         if not questionary.confirm("Screen another batch?", default=True).ask():
             break
@@ -1151,6 +1164,20 @@ def run_review_gate(state: RunState, cfg: ReviewConfig, prov: Provenance, phase:
     n_included_final = len(included_df) - n_to_exclude + n_to_include
     console.print(f"[green]{n_included_final}[/] studies included for phase {phase} "
                   f"({n_to_exclude} flipped to exclude, {n_to_include} rescued from exclude).")
+
+    n_undecided = int((screening_df["ta_decision"].isna() |
+                        (screening_df["ta_decision"].astype(str).str.strip() == "")).sum())
+    if n_undecided:
+        console.print(Panel(
+            f"{n_undecided} record(s) in phase {phase} still have no title/abstract "
+            f"decision, so the review gate is NOT marked complete.\n\nScreen them "
+            f"(AI-assist or by hand in {screening_path.name}), then re-run this step. "
+            f"A phase cannot be gated -- and the pipeline cannot advance past it -- "
+            f"while records remain unaccounted for.",
+            title="[yellow]Review gate incomplete[/]", border_style="yellow",
+        ))
+        prov.log("review_gate_incomplete", phase=phase, n_undecided=n_undecided)
+        return
 
     state.mark_stage(phase, "review_gate",
                       counts={"n_included": n_included_final, "n_overridden": n_to_exclude + n_to_include})
@@ -1380,6 +1407,17 @@ def _menu_full_text_screening(state: RunState, cfg: ReviewConfig, prov: Provenan
     console.print(f"[bold]{n_inc}[/] included after full text, [bold]{n_exc}[/] excluded, "
                   f"[bold]{n_left}[/] still undecided.")
     prov.log("full_text_screening", n_included=n_inc, n_excluded=n_exc, n_undecided=n_left)
+
+    if n_left:
+        console.print(Panel(
+            f"{n_left} record(s) still have no full-text decision, so full-text "
+            f"screening is NOT marked complete.\n\nRead the rest and record a "
+            f"decision, then re-run this step.",
+            title="[yellow]Full-text screening incomplete[/]", border_style="yellow",
+        ))
+        prov.log("full_text_screening_incomplete", n_undecided=n_left)
+        return
+
     state.mark_stage(1, "full_text_screening", counts={"n_included": n_inc, "n_excluded": n_exc})
 
 
@@ -1571,6 +1609,143 @@ def _menu_extract(state: RunState, cfg: ReviewConfig, prov: Provenance, console:
         prov.log("build_extraction_sheet", n_rows=n_rows)
 
 
+_EXTRACTION_EDIT_FIELDS = [
+    "thematic_class", "study_type", "contribution", "key_findings",
+    "rq_mapping", "limitations", "venue_tier", "R", "A", "T", "C",
+    "quality_tier", "notes",
+]
+_EXTRACTION_ENUM_CHOICES = {
+    "venue_tier": ["T1", "T2", "T3"],
+    "R": ["L", "S", "H"], "A": ["L", "S", "H"], "T": ["L", "S", "H"], "C": ["L", "S", "H"],
+    "quality_tier": ["A", "B", "C"],
+}
+
+
+def _menu_review_extraction(state: RunState, cfg: ReviewConfig, prov: Provenance,
+                             console: Console) -> None:
+    """Guided, one-record-at-a-time editor for extraction.csv -- the intended
+    alternative to hand-editing the CSV. venue_tier/R/A/T/C/quality_tier are
+    edited through a select menu so an invalid value cannot be typed; free-text
+    fields keep the current value as the default so pressing Enter never blanks
+    them. Every change is logged to provenance, closing the gap where extraction
+    edits previously left no audit trail (unlike screening decisions). Editing
+    R/A/T/C recomputes quality_tier via compute_quality_tier() (README Stage 5's
+    mechanical formula); editing quality_tier directly is treated as a manual
+    override and logged as such when it disagrees with the computed value."""
+    extraction_path = state.run_dir / "extraction.csv"
+    df = _read_csv_safe(extraction_path)
+    if df.empty:
+        console.print("[yellow]No extraction.csv yet -- run 'Build extraction sheet' first.[/]")
+        return
+
+    for field in _EXTRACTION_EDIT_FIELDS + ["extraction_reviewer", "extraction_date"]:
+        if field in df.columns:
+            df[field] = df[field].astype(object)
+        else:
+            df[field] = ""
+
+    reviewer = cfg.reviewer or "human-review"
+
+    while True:
+        table = Table(title="Extraction records")
+        for col in ("id", "title", "venue_tier", "R", "A", "T", "C", "quality_tier"):
+            table.add_column(col)
+        for _, row in df.iterrows():
+            table.add_row(
+                _disp(row.get("id", "")), _disp(row.get("title", ""))[:50],
+                _disp(row.get("venue_tier", "")), _disp(row.get("R", "")),
+                _disp(row.get("A", "")), _disp(row.get("T", "")), _disp(row.get("C", "")),
+                _disp(row.get("quality_tier", "")),
+            )
+        console.print(table)
+
+        study_id = questionary.text(
+            "Study id to review/correct (blank to finish):", default="").ask()
+        if not study_id or not study_id.strip():
+            break
+        study_id = study_id.strip()
+
+        matches = df.index[df["id"].astype(str).str.strip() == study_id]
+        if len(matches) == 0:
+            console.print(f"[red]No study with id '{study_id}'.[/]")
+            continue
+        idx = matches[0]
+
+        while True:
+            row = df.loc[idx]
+            detail = "\n".join(
+                f"[bold]{field}[/]: {_disp(row.get(field, '')) or '(blank)'}"
+                for field in _EXTRACTION_EDIT_FIELDS
+            )
+            console.print(Panel(
+                detail,
+                title=f"[{_disp(row.get('id', ''))}] {_disp(row.get('title', ''))[:60]}",
+                border_style="white",
+            ))
+
+            field = questionary.select(
+                "Which field would you like to edit?",
+                choices=_EXTRACTION_EDIT_FIELDS + ["Done with this study"],
+            ).ask()
+            if field is None or field == "Done with this study":
+                break
+
+            old_value = _disp(row.get(field, ""))
+            if field in _EXTRACTION_ENUM_CHOICES:
+                new_value = questionary.select(
+                    f"{field} (currently: {old_value or '(blank)'}):",
+                    choices=_EXTRACTION_ENUM_CHOICES[field],
+                ).ask()
+            else:
+                new_value = questionary.text(f"{field}:", default=old_value).ask()
+            if new_value is None:
+                continue
+            new_value = str(new_value).strip()
+
+            if new_value == old_value:
+                continue  # nothing changed -- nothing to write or log
+
+            df.at[idx, field] = new_value
+            prov.log(
+                "extraction_field_edited", study_id=study_id, field=field,
+                old_value=old_value, new_value=new_value, reviewer=reviewer,
+            )
+            console.print(f"[green]Updated {field}[/] for id {study_id}: "
+                          f"'{old_value or '(blank)'}' -> '{new_value}'.")
+
+            if field == "quality_tier":
+                r, a, t, c = (df.at[idx, "R"], df.at[idx, "A"],
+                              df.at[idx, "T"], df.at[idx, "C"])
+                computed = compute_quality_tier(r, a, t, c)
+                if computed is not None and new_value.upper() != computed:
+                    console.print(
+                        f"[yellow]This overrides the computed tier ('{computed}' from "
+                        f"R/A/T/C) -- logged as a manual override.[/]")
+                    prov.log(
+                        "quality_tier_manual_override", study_id=study_id,
+                        computed=computed, override=new_value, reviewer=reviewer,
+                    )
+            elif field in ("R", "A", "T", "C"):
+                r, a, t, c = (df.at[idx, "R"], df.at[idx, "A"],
+                              df.at[idx, "T"], df.at[idx, "C"])
+                computed = compute_quality_tier(r, a, t, c)
+                if computed is not None:
+                    prior = _disp(df.at[idx, "quality_tier"])
+                    df.at[idx, "quality_tier"] = computed
+                    if prior and prior != computed:
+                        console.print(
+                            f"[yellow]quality_tier recomputed from R/A/T/C: "
+                            f"'{prior}' -> '{computed}'.[/]")
+                    prov.log(
+                        "quality_tier_recomputed", study_id=study_id,
+                        quality_tier=computed, r=r, a=a, t=t, c=c,
+                    )
+
+            df.at[idx, "extraction_reviewer"] = reviewer
+            df.at[idx, "extraction_date"] = date.today().isoformat()
+            df.to_csv(extraction_path, index=False, encoding="utf-8")
+
+
 def _menu_figures(state: RunState, cfg: ReviewConfig, prov: Provenance, console: Console) -> None:
     counts = _compute_prisma_counts(state, cfg)
     warnings = prisma_residuals(counts)
@@ -1583,17 +1758,13 @@ def _menu_figures(state: RunState, cfg: ReviewConfig, prov: Provenance, console:
         prov.log("figures_skipped", reason="unbalanced PRISMA counts", warnings=warnings)
         return
 
-    last_phase = cfg.n_phases
-    pdir = state.phase_dir(last_phase)
     run_dir = state.run_dir
     outdir = run_dir / "figures"
     extraction_path = run_dir / "extraction.csv"
 
     cmd = [
         sys.executable, _script_path("figures.py"),
-        "--screening", str(pdir / "screening.csv"),
-        "--dedup", str(pdir / "candidates_dedup.csv"),
-        "--candidates", str(pdir / "candidates.csv"),
+        "--run-dir", str(run_dir),
         "--quality", str(extraction_path),
         "--outdir", str(outdir),
         "--identified", str(counts["identified"]),
@@ -1747,95 +1918,21 @@ def _menu_kappa(state: RunState, cfg: ReviewConfig, prov: Provenance, console: C
               sheet_a=str(path_a), sheet_b=str(path_b), note=result.note)
 
 
-def _norm_col(df: pd.DataFrame, col: str) -> pd.Series:
-    if col not in df.columns or df.empty:
-        return pd.Series([""] * len(df), index=df.index, dtype=object)
-    return df[col].fillna("").astype(str).str.strip().str.lower()
-
-
 def _compute_prisma_counts(state: RunState, cfg: ReviewConfig) -> dict:
-    identified = 0
-    duplicates_removed = 0
-    screened = 0
-    excluded_ta = 0
-    undecided_ta = 0
-    assessed_ft = 0
-    for phase in range(1, cfg.n_phases + 1):
-        pdir = state.phase_dir(phase)
-        cand = _read_csv_safe(pdir / "candidates.csv")
-        dedup = _read_csv_safe(pdir / "candidates_dedup.csv")
-        screening = _read_csv_safe(pdir / "screening.csv")
-        identified += len(cand)
-        if "duplicate_of" in dedup.columns:
-            duplicates_removed += int(dedup["duplicate_of"].notna().sum())
-        elif not cand.empty and not dedup.empty:
-            duplicates_removed += max(len(cand) - len(dedup), 0)
-        screened += len(screening)
-        if "ta_decision" in screening.columns:
-            ta = _norm_col(screening, "ta_decision")
-            excluded_ta += int(ta.eq("exclude").sum())
-            undecided_ta += int(ta.eq("").sum())
-            # "assessed at full text" = every TA include/maybe -- a "maybe"
-            # proceeds to full-text reading exactly like an "include" (see
-            # srp.decisions.TA_PROCEED_DECISIONS). This is distinct from
-            # undecided_ft below, which tracks whether that assessment has
-            # actually been recorded yet.
-            assessed_ft += int(ta.isin(["include", "maybe"]).sum())
-
+    """Thin wrapper: reads each phase's own CSVs plus the run-level
+    included_final.csv off disk, then delegates the actual funnel-counting to
+    srp.prisma.derive_prisma_counts_for_run -- the single implementation
+    shared with scripts/figures.py's standalone --run-dir mode."""
+    phases = [
+        PhaseFrames(
+            candidates=_read_csv_safe(state.phase_dir(phase) / "candidates.csv"),
+            dedup=_read_csv_safe(state.phase_dir(phase) / "candidates_dedup.csv"),
+            screening=_read_csv_safe(state.phase_dir(phase) / "screening.csv"),
+        )
+        for phase in range(1, cfg.n_phases + 1)
+    ]
     included_final = _read_csv_safe(state.run_dir / "included_final.csv")
-    excluded_ft = included = undecided_ft = 0
-    ft_reasons: Counter = Counter()
-    if not included_final.empty and "ft_decision" in included_final.columns:
-        ft = _norm_col(included_final, "ft_decision")
-        excluded_ft = int(ft.eq("exclude").sum())
-        included = int(ft.eq("include").sum())
-        undecided_ft = int(ft.eq("").sum())
-        if "ft_reason" in included_final.columns:
-            for reason in included_final.loc[ft.eq("exclude"), "ft_reason"].dropna():
-                reason = str(reason).strip()
-                if reason:
-                    ft_reasons[reason] += 1
-
-    return {
-        "identified": identified,
-        "duplicates_removed": duplicates_removed,
-        "screened": screened,
-        "excluded_ta": excluded_ta,
-        "assessed_ft": assessed_ft,
-        "excluded_ft": excluded_ft,
-        "included": included,
-        "undecided_ta": undecided_ta,
-        "undecided_ft": undecided_ft,
-        "ft_reasons": dict(ft_reasons),
-    }
-
-
-def prisma_residuals(counts: dict) -> list[str]:
-    """Arithmetic sanity checks across the PRISMA count derivation -- warnings,
-    not hard errors, since a partially-run review legitimately has gaps."""
-    warnings = []
-    if counts.get("undecided_ta"):
-        warnings.append(
-            f"{counts['undecided_ta']} record(s) have no title/abstract decision yet -- "
-            f"they appear in neither the 'excluded' nor the 'assessed' box, so the "
-            f"diagram will not balance until they are screened.")
-    screened = counts.get("screened", 0)
-    excluded_ta = counts.get("excluded_ta", 0)
-    assessed_ft = counts.get("assessed_ft", 0)
-    undecided_ta = counts.get("undecided_ta", 0)
-    diff = screened - (excluded_ta + assessed_ft + undecided_ta)
-    if diff != 0:
-        warnings.append(
-            f"screened ({screened}) != excluded_ta ({excluded_ta}) + assessed_ft "
-            f"({assessed_ft}) + undecided_ta ({undecided_ta}); unexplained difference "
-            f"of {diff}.")
-    included = counts.get("included", 0)
-    if included > assessed_ft:
-        warnings.append(
-            f"included ({included}) exceeds assessed_ft ({assessed_ft}) -- a study "
-            f"cannot be included without being assessed. This normally means full-text "
-            f"screening has not been run.")
-    return warnings
+    return derive_prisma_counts_for_run(phases, included_final)
 
 
 def _prisma_report_rows(counts: dict) -> dict:
@@ -1990,6 +2087,8 @@ def consolidation_menu(state: RunState, cfg: ReviewConfig, prov: Provenance, con
         "Verify citations (DOIs)": lambda: _menu_verify_citations(state, cfg, prov, console),
         "Build extraction sheet (for human quality coding)":
             lambda: _menu_extract(state, cfg, prov, console),
+        "Review/correct an extraction record (venue tier, R/A/T/C, quality tier, ...)":
+            lambda: _menu_review_extraction(state, cfg, prov, console),
         "Generate PRISMA + tier figures": lambda: _menu_figures(state, cfg, prov, console),
         "Export references (BibTeX + RIS)": lambda: _menu_export_refs(state, cfg, prov, console),
         "Export full-text exclusions with reasons (PRISMA 16b)":
