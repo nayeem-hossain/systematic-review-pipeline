@@ -603,8 +603,16 @@ def search_scopus(query: str, year_from: int, year_to: int, api_key: str,
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else None
             if view == "COMPLETE" and status in (401, 403):
-                print("  scopus: COMPLETE view refused (entitlement) -- falling back to "
-                       "STANDARD view; abstracts will be EMPTY for scopus rows",
+                # Elsevier authenticates Scopus keys by IP range by default, so this
+                # exact 401/403 is just as often "off-campus, no SCOPUS_INSTTOKEN" as
+                # it is a genuine COMPLETE-view entitlement refusal -- the response
+                # doesn't reliably distinguish the two from here, so don't assert a
+                # cause this code can't actually confirm.
+                reason = ("likely COMPLETE-view entitlement" if insttoken else
+                          "COMPLETE-view entitlement, or -- if you're off-campus -- an "
+                          "IP-authentication failure, since SCOPUS_INSTTOKEN is not set")
+                print(f"  scopus: request refused ({status}) -- {reason}. Falling back "
+                       f"to STANDARD view; abstracts will be EMPTY for scopus rows",
                        file=sys.stderr)
                 view = "STANDARD"
                 continue
