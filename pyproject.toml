@@ -2,7 +2,12 @@
 name = "systematic-review-pipeline"
 version = "1.0.0"
 description = "A guided, auditable systematic-literature-review pipeline: search, dedup, screen, extract, appraise, and report against PRISMA 2020."
+readme = "README.md"
 requires-python = ">=3.10"
+# Covers the Python source (slr.py, srp/, scripts/) only -- README.md and
+# examples/README.md are separately licensed under CC-BY-4.0; see LICENSE-docs
+# and the README's own "## License" section for the split and why.
+license = {file = "LICENSE"}
 dependencies = [
     "requests>=2.31",
     "pandas>=2.0",
