@@ -186,9 +186,13 @@ A real run of either path writes `output/` and `pdfs/` (manual path) or
 gitignored. This repository ships with a **committed demonstration run**
 instead, under `examples/`: `examples/demo_output/` holds the real CSVs
 produced by an actual ML-IDS search (candidates, dedup, screening, download
-log, citation verification), and `examples/demo_pdfs/` holds the open-access
-PDFs that `scripts/download.py` fetched. `examples/` additionally keeps a small
-curated sample of each output -- including a fully-decided screening sheet, a
+log, citation verification). The open-access PDFs that `scripts/download.py`
+fetched for that same run aren't tracked in git (12 PDFs, ~50 MB -- every
+`pipx`/`pip install git+...` would otherwise re-download them for no reason,
+since they're example data, not part of the installed tool); they're attached
+to the [latest GitHub release](https://github.com/nayeem-hossain/systematic-review-pipeline/releases/latest)
+as `demo_pdfs.zip` instead. `examples/` additionally keeps a small curated
+sample of each output -- including a fully-decided screening sheet, a
 filled-in extraction/quality-scoring sheet, and the figures `scripts/figures.py`
 renders from them (`examples/figures/`) -- so you can see the CSV and figure
 shapes at a glance; see `examples/README.md` for the exact commands used and
@@ -244,10 +248,12 @@ systematic-review-pipeline/
 │   ├── README.md
 │   ├── *_sample.csv            # small curated sample of each stage's output
 │   ├── demo_output/              # CSV outputs of the ML-IDS demonstration run
-│   ├── demo_pdfs/                  # open-access PDFs fetched in the demo run
 │   └── figures/                      # prisma_flow, prisma_2020, quality_tiers, venue_tiers (.png + .pdf)
+│   # demo_pdfs/ (the open-access PDFs from that run) is NOT tracked here --
+│   # attached as demo_pdfs.zip on the GitHub release instead, so a `pipx`/`pip
+│   # install git+...` never has to download 50 MB of example PDFs to run the tool.
 ├── .github/workflows/tests.yml  # CI: runs the pytest suite on push/PR
-├── pyproject.toml           # package metadata for `srp` (no console-script entry points)
+├── pyproject.toml           # package metadata; `slr` console-script entry point for pipx/pip
 ├── requirements.txt         # minimum versions
 ├── requirements.lock         # exact pins -- use these for a review you'll publish
 ├── .env.example
