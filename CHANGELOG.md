@@ -6,6 +6,14 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-14
+
+### Fixed
+
+- `pyproject.toml` declared no `license` metadata, even though the package
+  is now really `pip`/`pipx`-installable -- added (`MIT`, with `LICENSE` and
+  `LICENSE-docs` both bundled into the wheel).
+
 ## [1.0.0] - 2026-08-13
 
 First tagged release. No earlier version was ever tagged or distributed, so
