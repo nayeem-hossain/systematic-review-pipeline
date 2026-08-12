@@ -67,8 +67,13 @@ from srp.prisma import PhaseFrames, derive_prisma_counts_for_run, prisma_residua
 from srp.provenance import Provenance
 from srp.quality_tier import compute_quality_tier
 from srp.state import RunState, record_key
+from srp.update_check import check_for_update, is_newer, latest_release_version
+from srp import __version__ as _VERSION
 from srp import llm_assist
 from srp import export as srp_export
+
+_RELEASES_URL = "https://github.com/nayeem-hossain/systematic-review-pipeline/releases"
+_CHANGELOG_URL = "https://github.com/nayeem-hossain/systematic-review-pipeline/blob/main/CHANGELOG.md"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 SCRIPTS_DIR = _SCRIPT_DIR / "scripts"
@@ -2104,6 +2109,7 @@ def consolidation_menu(state: RunState, cfg: ReviewConfig, prov: Provenance, con
         "Write review self-appraisal checklist (AMSTAR 2/ROBIS/DARE/MECCIR)":
             lambda: _menu_review_self_appraisal(state, cfg, prov, console),
         "Write provenance report": lambda: _menu_provenance(state, cfg, prov, console),
+        "Check for updates": lambda: _menu_check_for_updates(state, cfg, prov, console),
     }
 
     console.rule("[bold]Consolidation[/]")
@@ -2116,6 +2122,54 @@ def consolidation_menu(state: RunState, cfg: ReviewConfig, prov: Provenance, con
     _print_closing_panel(state, console)
 
 
+def _maybe_print_update_notice(console: Console) -> None:
+    """Non-blocking startup nag: silent unless a real newer release exists --
+    never claims outdated on a check failure or a source/dev checkout (see
+    srp.update_check.check_for_update)."""
+    latest = check_for_update(_VERSION)
+    if latest:
+        console.print(
+            f"[yellow]A newer version is available: {latest} (you're on {_VERSION}).[/] "
+            f"Run 'pipx upgrade systematic-review-pipeline' to update, or see "
+            f"{_CHANGELOG_URL}"
+        )
+
+
+# --- core logic ---
+def _menu_check_for_updates(state: RunState, cfg: ReviewConfig, prov: Provenance,
+                             console: Console) -> None:
+    """On-demand version of _maybe_print_update_notice that always reports a
+    result -- up to date, outdated, or check-failed -- instead of staying
+    silent, and logs the outcome to provenance."""
+    if _VERSION.startswith("0.0.0-dev"):
+        console.print(
+            "[dim]Running from source (not a packaged install) -- version comparison "
+            f"isn't meaningful; a checkout can be ahead of the last tagged release. "
+            f"See the latest release directly: {_RELEASES_URL}[/]"
+        )
+        prov.log("update_check", current=_VERSION, latest=None, outcome="dev_build")
+        return
+
+    latest = latest_release_version()
+    if latest is None:
+        console.print(
+            "[yellow]Could not check for updates[/] (no network, or GitHub is "
+            "unreachable right now)."
+        )
+        prov.log("update_check", current=_VERSION, latest=None, outcome="check_failed")
+        return
+
+    if is_newer(latest, _VERSION):
+        console.print(
+            f"[yellow]A newer version is available: {latest} (you're on {_VERSION}).[/] "
+            f"Run 'pipx upgrade systematic-review-pipeline' to update."
+        )
+        prov.log("update_check", current=_VERSION, latest=latest, outcome="outdated")
+    else:
+        console.print(f"[green]Up to date[/] (v{_VERSION}).")
+        prov.log("update_check", current=_VERSION, latest=latest, outcome="up_to_date")
+
+
 # ---------------------------------------------------------------------------
 # A / E. launch + resume
 # ---------------------------------------------------------------------------
@@ -2123,6 +2177,7 @@ def main_interactive(runs_dir: Path, console: Console, preselect_run: str | None
     console.print(Panel.fit(
         "[bold]Systematic Review Pipeline[/]\n[dim]guided mode[/]", border_style="cyan",
     ))
+    _maybe_print_update_notice(console)
 
     existing_runs = RunState.list_runs(runs_dir)
     run_id = preselect_run if preselect_run in existing_runs else None
@@ -2164,6 +2219,8 @@ def main_interactive(runs_dir: Path, console: Console, preselect_run: str | None
         if result is None:
             return
         state, cfg, prov = result
+
+    prov.log("tool_version", version=_VERSION)
 
     run_phase_loop(state, cfg, prov, console)
     consolidation_menu(state, cfg, prov, console)

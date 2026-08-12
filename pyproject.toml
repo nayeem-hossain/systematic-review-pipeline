@@ -1,6 +1,6 @@
 [project]
 name = "systematic-review-pipeline"
-version = "0.1.0"
+version = "1.0.0"
 description = "A guided, auditable systematic-literature-review pipeline: search, dedup, screen, extract, appraise, and report against PRISMA 2020."
 requires-python = ">=3.10"
 dependencies = [
@@ -15,13 +15,22 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
-# No [project.scripts] entry points: the README documents `python slr.py` and
-# `python scripts/<stage>.py` directly, and that is how this project is meant to
-# be read and run -- each stage script is designed to be opened and understood,
-# not hidden behind an installed console command.
+[project.urls]
+Repository = "https://github.com/nayeem-hossain/systematic-review-pipeline"
+Changelog = "https://github.com/nayeem-hossain/systematic-review-pipeline/blob/main/CHANGELOG.md"
+
+# `slr` launches the same guided TUI as `python slr.py` -- installing it via
+# pip/pipx is a convenience for finding and updating the tool, not a reason to
+# hide it: `scripts/<stage>.py` remain individually readable and directly
+# runnable (`python scripts/search.py --help`) from the installed package or
+# a plain git clone, exactly as before. Nothing about this entry point stops
+# anyone from opening and reading the script that's actually running.
+[project.scripts]
+slr = "slr:main"
 
 [tool.setuptools]
-packages = ["srp"]
+packages = ["srp", "scripts"]
+py-modules = ["slr"]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -112,6 +112,7 @@ class TestProvenanceCoverage:
         "_menu_verify_citations", "_menu_extract", "_menu_figures",
         "_menu_export_refs", "_menu_export_exclusions", "_menu_kappa",
         "_menu_review_self_appraisal", "_menu_review_extraction",
+        "_menu_check_for_updates",
     ])
     def test_action_takes_provenance_and_logs(self, func):
         import inspect
@@ -816,3 +817,104 @@ class TestMainHandlesCorruptCsv:
         monkeypatch.setattr(slr, "main_interactive", boom)
         monkeypatch.setattr(sys, "argv", ["slr.py", "--runs-dir", str(tmp_path)])
         assert slr.main() != 130  # 130 is KeyboardInterrupt's code, not this error's
+
+
+class TestUpdateNotice:
+    """The startup nag must never block or spam -- silent when up to date, a
+    check failure, or a dev/uninstalled build, and a single visible line only
+    when a real newer release exists."""
+
+    def test_prints_nothing_when_up_to_date_or_check_fails(self, monkeypatch):
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "check_for_update", lambda v: None)
+        slr._maybe_print_update_notice(console)
+        assert console.file.getvalue() == ""
+
+    def test_prints_notice_when_a_newer_release_exists(self, monkeypatch):
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "check_for_update", lambda v: "v9.9.9")
+        slr._maybe_print_update_notice(console)
+        text = console.file.getvalue()
+        assert "9.9.9" in text
+        assert "pipx upgrade" in text
+
+
+class TestMenuCheckForUpdates:
+    def _state_cfg_prov(self, tmp_path):
+        cfg = ReviewConfig(topic="t", mailto="a@b.c")
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        return st, cfg, prov
+
+    def test_up_to_date(self, tmp_path, monkeypatch):
+        st, cfg, prov = self._state_cfg_prov(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "_VERSION", "1.0.0")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: "v1.0.0")
+
+        slr._menu_check_for_updates(st, cfg, prov, console)
+
+        assert "up to date" in console.file.getvalue().lower()
+        events = [e for e in prov.events() if e["event"] == "update_check"]
+        assert events and events[0]["outcome"] == "up_to_date"
+
+    def test_outdated(self, tmp_path, monkeypatch):
+        st, cfg, prov = self._state_cfg_prov(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "_VERSION", "1.0.0")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: "v9.9.9")
+
+        slr._menu_check_for_updates(st, cfg, prov, console)
+
+        text = console.file.getvalue()
+        assert "9.9.9" in text and "pipx upgrade" in text
+        events = [e for e in prov.events() if e["event"] == "update_check"]
+        assert events and events[0]["outcome"] == "outdated"
+
+    def test_check_failed(self, tmp_path, monkeypatch):
+        st, cfg, prov = self._state_cfg_prov(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "_VERSION", "1.0.0")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: None)
+
+        slr._menu_check_for_updates(st, cfg, prov, console)
+
+        assert "could not check" in console.file.getvalue().lower()
+        events = [e for e in prov.events() if e["event"] == "update_check"]
+        assert events and events[0]["outcome"] == "check_failed"
+
+    def test_dev_build_is_not_falsely_flagged(self, tmp_path, monkeypatch):
+        """A source checkout can be ahead of the last tag, not behind it --
+        must not claim 'outdated' just because it isn't a real release."""
+        st, cfg, prov = self._state_cfg_prov(tmp_path)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "_VERSION", "0.0.0-dev")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: "v1.0.0")
+
+        slr._menu_check_for_updates(st, cfg, prov, console)
+
+        text = console.file.getvalue().lower()
+        assert "outdated" not in text
+        assert "source" in text
+        events = [e for e in prov.events() if e["event"] == "update_check"]
+        assert events and events[0]["outcome"] == "dev_build"
+
+
+class TestToolVersionStampedToProvenance:
+    def test_main_interactive_logs_tool_version_for_a_new_review(self, tmp_path, monkeypatch):
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "check_for_update", lambda v: None)
+
+        cfg = ReviewConfig(topic="t", mailto="a@b.c")
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+
+        monkeypatch.setattr(slr, "new_review_wizard", lambda console, runs_dir: (st, cfg, prov))
+        monkeypatch.setattr(slr, "run_phase_loop", lambda *a, **kw: None)
+        monkeypatch.setattr(slr, "consolidation_menu", lambda *a, **kw: None)
+        monkeypatch.setattr(slr.RunState, "list_runs", staticmethod(lambda runs_dir: []))
+
+        slr.main_interactive(tmp_path, console)
+
+        events = [e for e in prov.events() if e["event"] == "tool_version"]
+        assert events and events[0]["version"] == slr._VERSION

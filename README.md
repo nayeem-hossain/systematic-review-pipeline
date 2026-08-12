@@ -15,9 +15,51 @@ GANs, and federated learning to network security. Swap the search terms, the
 PICOC table, and the inclusion/exclusion criteria for your own topic; the
 pipeline and the method don't change.
 
+## Installing
+
+**Quickest: `pipx install` directly from GitHub** -- no `git clone` needed,
+works identically on Windows/macOS/Linux, and pulls in every dependency
+(pandas, matplotlib, etc. -- the full `dependencies` list in `pyproject.toml`)
+automatically:
+
+```bash
+pipx install git+https://github.com/nayeem-hossain/systematic-review-pipeline.git
+slr
+```
+
+(`pipx` isolates the install in its own environment so it can't collide with
+another project's packages; install it once with
+`python -m pip install --user pipx` if you don't have it yet. Plain
+`pip install git+...` also works if you'd rather not use pipx.)
+
+This installs the exact same code as the git-clone paths below --
+`scripts/*.py` ship alongside `slr.py` and remain individually readable and
+directly runnable from the installed copy, same as from a clone. Installing
+via pipx is a convenience for finding and updating the tool, not a reason to
+trust it any less than reading the source directly.
+
+**Keeping up to date.** The guided TUI checks GitHub's latest release once at
+startup -- a single non-blocking network call, silent if you're offline or
+already current -- and prints a one-line notice if a newer version exists. It
+never auto-updates and never blocks you from continuing on an old version (see
+`CHANGELOG.md` for why: forcing an update mid-review risks changing dedup or
+counting behavior partway through a review's own corpus, which is worse than
+staying on the version you started with). Update yourself with:
+
+```bash
+pipx upgrade systematic-review-pipeline
+```
+
+You can also check on demand from the guided TUI's consolidation menu's
+**"Check for updates"** action, which always reports a result (up to date /
+outdated / couldn't check) rather than staying silent. Note this only works
+going forward: the check can only run from a copy of the tool that already
+has the checking code in it. If you installed before this feature existed,
+`pipx upgrade` once gets you a copy that checks for itself from then on.
+
 ## Two ways to run this
 
-**a) Guided (recommended): `python slr.py`**
+**a) Guided (recommended): `python slr.py`** (or just `slr` if pip/pipx-installed)
 
 An interactive terminal (needs `questionary` + `rich`, see [Running the
 pipeline](#running-the-pipeline) below) that walks you through a setup wizard
