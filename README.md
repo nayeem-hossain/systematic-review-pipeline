@@ -20,7 +20,22 @@ pipeline and the method don't change.
 **Quickest: `pipx install` directly from GitHub** -- no `git clone` needed,
 works identically on Windows/macOS/Linux, and pulls in every dependency
 (pandas, matplotlib, etc. -- the full `dependencies` list in `pyproject.toml`)
-automatically:
+automatically.
+
+`pipx` is a separate tool, not something Python/pip ships with -- if
+`pipx install ...` prints "not recognized as an internal or external
+command" (Windows) or "command not found" (macOS/Linux), that's this, not a
+problem with this project. Install it once, then **close and reopen your
+terminal** (this step edits your PATH, which an already-open terminal won't
+pick up):
+
+```bash
+python -m pip install --user pipx
+python -m pipx ensurepath
+# close and reopen your terminal here
+```
+
+Then install and run the tool itself:
 
 ```bash
 pipx install git+https://github.com/nayeem-hossain/systematic-review-pipeline.git
@@ -28,9 +43,9 @@ slr
 ```
 
 (`pipx` isolates the install in its own environment so it can't collide with
-another project's packages; install it once with
-`python -m pip install --user pipx` if you don't have it yet. Plain
-`pip install git+...` also works if you'd rather not use pipx.)
+another project's packages. Plain `pip install git+...` also works if you'd
+rather not use pipx -- but then you're managing your own virtual environment
+instead of getting one for free.)
 
 This installs the exact same code as the git-clone paths below --
 `scripts/*.py` ship alongside `slr.py` and remain individually readable and
