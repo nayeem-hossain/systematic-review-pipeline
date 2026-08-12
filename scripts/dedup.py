@@ -124,6 +124,10 @@ def records_match(title_a, title_b, authors_a, authors_b, threshold: int,
     return score
 
 
+def _has_content(value) -> bool:
+    return pd.notna(value) and str(value).strip() != ""
+
+
 def dedup(df: pd.DataFrame, title_threshold: int = 92,
            min_length_ratio: float = MIN_LENGTH_RATIO) -> pd.DataFrame:
     df = df.copy()
@@ -132,20 +136,46 @@ def dedup(df: pd.DataFrame, title_threshold: int = 92,
     df["duplicate_of"] = pd.NA
     df["dedup_method"] = pd.NA
 
-    # Pass 1: exact DOI match. First-seen row per DOI is canonical.
+    # Union-find over row indices: Pass 1 and Pass 2 below only need to decide
+    # WHICH rows belong together, not which one is canonical -- that is resolved
+    # once, after both passes, from the full cluster (see "Canonical selection"
+    # below). This lets the survivor be picked on data quality (has a DOI, has an
+    # abstract) rather than on which row happened to be compared first.
+    parent = {idx: idx for idx in df.index}
+
+    def find(i):
+        root = i
+        while parent[root] != root:
+            root = parent[root]
+        while parent[i] != root:
+            parent[i], i = root, parent[i]
+        return root
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    # dedup_method is recorded against whichever row a merge was actually
+    # detected FOR, describing the real comparison that caught it -- even if
+    # canonical selection later assigns duplicate_of to a different cluster
+    # member than the one it was directly compared against.
+    method_of: dict[int, str] = {}
+
+    # Pass 1: exact DOI match.
     seen_doi: dict[str, int] = {}
     for idx in df.index:
         doi = df.at[idx, "doi_norm"]
         if not doi:
             continue
         if doi in seen_doi:
-            df.at[idx, "duplicate_of"] = seen_doi[doi]
-            df.at[idx, "dedup_method"] = "doi_exact"
+            union(seen_doi[doi], idx)
+            method_of[idx] = "doi_exact"
         else:
-            seen_doi[doi] = df.at[idx, "id"]
+            seen_doi[doi] = idx
 
-    # Pass 2: fuzzy title + author match over EVERY record not already merged --
-    # including records that have a DOI, and across year boundaries.
+    # Pass 2: fuzzy title + author match over EVERY record -- including records
+    # that have a DOI, and across year boundaries.
     #
     # The previous version compared only DOI-less records, bucketed by year. Both
     # restrictions silently defeated the single most common duplicate in a
@@ -154,27 +184,24 @@ def dedup(df: pd.DataFrame, title_threshold: int = 92,
     # could never meet. Counting one study twice inflates the evidence base, which
     # is exactly what PRISMA's duplicate-removal step exists to prevent.
     #
-    # Canonical preference: DOI-bearing records are considered first, so the
-    # surviving record is the one that can be cited. Cost is O(n^2) title
-    # comparisons, which for a review-sized corpus (hundreds to low thousands,
-    # bounded by --max-per-source) is well under a second with the length pre-filter.
+    # DOI-bearing records are considered first so a match is discovered anchored
+    # to a citable record where possible. Cost is O(n^2) title comparisons, which
+    # for a review-sized corpus (hundreds to low thousands, bounded by
+    # --max-per-source) is well under a second with the length pre-filter.
     # --- core logic: the dedup match loop ---
-    candidates = [i for i in df.index
-                  if pd.isna(df.at[i, "duplicate_of"]) and df.at[i, "title_norm"]]
+    candidates = [i for i in df.index if df.at[i, "title_norm"]]
     candidates.sort(key=lambda i: 0 if df.at[i, "doi_norm"] else 1)  # stable: DOI first
 
     has_authors = "authors" in df.columns
     for pos_a, a in enumerate(candidates):
-        if not pd.isna(df.at[a, "duplicate_of"]):
-            continue
         title_a, doi_a = df.at[a, "title_norm"], df.at[a, "doi_norm"]
         authors_a = df.at[a, "authors"] if has_authors else ""
         for b in candidates[pos_a + 1:]:
-            if not pd.isna(df.at[b, "duplicate_of"]):
-                continue
+            if find(a) == find(b):
+                continue  # already the same cluster
             title_b, doi_b = df.at[b, "title_norm"], df.at[b, "doi_norm"]
             if doi_a and doi_b and doi_a == doi_b:
-                continue  # already merged by pass 1
+                continue  # already unioned by pass 1
             authors_b = df.at[b, "authors"] if has_authors else ""
             score = records_match(title_a, title_b, authors_a, authors_b,
                                    title_threshold, min_length_ratio)
@@ -183,8 +210,34 @@ def dedup(df: pd.DataFrame, title_threshold: int = 92,
             # Label cross-DOI merges distinctly: they are the preprint/published
             # case and the one a reviewer may legitimately want to audit.
             kind = "fuzzy_title_crossdoi" if (doi_a and doi_b) else "fuzzy_title"
-            df.at[b, "duplicate_of"] = df.at[a, "id"]
-            df.at[b, "dedup_method"] = f"{kind}_{score:.0f}"
+            union(a, b)
+            method_of[b] = f"{kind}_{score:.0f}"
+
+    # Canonical selection, per cluster: has a DOI (citable) > has an abstract
+    # (screenable without hunting down the full text) > first-seen. DOI-presence
+    # stays the primary axis -- references.bib is built from the canonical
+    # record, and an uncitable survivor is a bigger loss than a thin one.
+    has_abstract_col = "abstract" in df.columns
+
+    def priority(idx):
+        has_doi = bool(df.at[idx, "doi_norm"])
+        has_abstract = has_abstract_col and _has_content(df.at[idx, "abstract"])
+        return (not has_doi, not has_abstract, idx)
+
+    clusters: dict[int, list[int]] = {}
+    for idx in df.index:
+        clusters.setdefault(find(idx), []).append(idx)
+
+    for members in clusters.values():
+        if len(members) < 2:
+            continue
+        canonical = min(members, key=priority)
+        canonical_id = df.at[canonical, "id"]
+        for idx in members:
+            if idx == canonical:
+                continue
+            df.at[idx, "duplicate_of"] = canonical_id
+            df.at[idx, "dedup_method"] = method_of.get(idx, "doi_exact")
     return df
 
 

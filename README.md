@@ -815,10 +815,11 @@ never an error, and never fatal to the run. Select a subset with `--sources`
 | `scopus` | `--scopus-api-key` | **skipped** | 9 requests/s, 20,000/week |
 | `springer` | `--springer-api-key` | **skipped** | 100 req/min, 500/day (free Basic tier) |
 | `core` | `--core-api-key` | **skipped** | 25 req/min personal, 10 req/min academic |
+| `wos` | `--wos-api-key` | **skipped** | 2/3/5 req/s (Basic/Advanced/Premium), plus an annual full-record quota |
 
 Each key also falls back to an environment variable (`S2_API_KEY`,
 `IEEE_API_KEY`, `SCOPUS_API_KEY`, `SPRINGER_API_KEY`, `PUBMED_API_KEY`,
-`CORE_API_KEY`), which `.env` supplies -- see `.env.example`. Precedence is
+`CORE_API_KEY`, `WOS_API_KEY`), which `.env` supplies -- see `.env.example`. Precedence is
 **flag > exported env var > `.env`**. The throttles above are enforced in
 `search.py` as documented constants, each carrying its source URL in a comment;
 HTTP 429 is retried with backoff on every source.
@@ -860,12 +861,14 @@ can report millions of "available" records on Crossref, because
 the `total_available` column before trusting any source's hit count as a
 database-level result.
 
-#### Four things worth knowing before you rely on these
+#### Five things worth knowing before you rely on these
 
-**IEEE and Scopus need an institutional subscription.** Neither is realistically
-obtainable by an unaffiliated researcher: IEEE limits API access to "current
-IEEE customers", and a Scopus key is authenticated against your institution's
-IP range. Get the access sorted before planning a review around them.
+**IEEE, Scopus, and Web of Science need an institutional subscription.** None
+is realistically obtainable by an unaffiliated researcher: IEEE limits API
+access to "current IEEE customers", a Scopus key is authenticated against your
+institution's IP range, and a Web of Science Expanded API key requires a
+separate licensing agreement with Clarivate on top of your institution's WoS
+subscription. Get the access sorted before planning a review around them.
 
 **Scopus only works on campus, unless you have an institutional token.** Pass
 `--scopus-insttoken` (or set `SCOPUS_INSTTOKEN`) to use a Scopus key from off
@@ -879,6 +882,12 @@ title-only screening is all they can support.
 
 **IEEE's 200 calls/day is enforced per run, not per day.** `search.py` keeps no
 cross-run counter, so several runs in one day can still exhaust the quota.
+
+**Web of Science's annual full-record quota is real and shared across every
+run.** Unlike IEEE's per-run call counter, this one isn't tracked locally at
+all -- a Basic-tier institutional key typically gets 50,000 full records/year
+across your whole institution, not just this tool. Keep `--max-per-source`
+modest while testing.
 
 ### `scripts/dedup.py` -- de-duplicate by DOI, then fuzzy title + author match
 

@@ -26,6 +26,7 @@ SECRET_ENV_VARS: dict[str, str] = {
     "scopus_api_key": "SCOPUS_API_KEY",
     "scopus_insttoken": "SCOPUS_INSTTOKEN",
     "springer_api_key": "SPRINGER_API_KEY",
+    "wos_api_key": "WOS_API_KEY",
 }
 SECRET_FIELDS = frozenset(SECRET_ENV_VARS)
 
@@ -57,6 +58,7 @@ class ReviewConfig:
     scopus_api_key: str = ""    # enables Scopus
     scopus_insttoken: str = ""  # Scopus off-campus institutional token (keys are IP-bound)
     springer_api_key: str = ""  # enables Springer Nature
+    wos_api_key: str = ""       # enables Web of Science Expanded
     sources: list[str] = field(
         default_factory=lambda: ["openalex", "semanticscholar", "crossref", "arxiv",
                                   "pubmed", "doaj"]

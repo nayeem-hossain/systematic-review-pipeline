@@ -69,7 +69,7 @@ class TestSecretsNeverPersist:
         cfg = ReviewConfig(topic="t", s2_api_key="S2SECRET", ieee_api_key="IEEESECRET",
                             scopus_api_key="SCSECRET", scopus_insttoken="TOKSECRET",
                             springer_api_key="SPSECRET", core_api_key="CORESECRET",
-                            pubmed_api_key="PMSECRET")
+                            pubmed_api_key="PMSECRET", wos_api_key="WOSSECRET")
         blob = json.dumps(cfg.to_dict())
         assert "SECRET" not in blob
         for name in SECRET_FIELDS:

@@ -15,7 +15,7 @@ Each source contributes a bounded number of rows (--max-per-source, default 200)
 so a first exploratory run stays fast and within API rate limits. Raise the cap
 for a real review's search rounds.
 
-SOURCES -- five keyless (one of them better with a key), four keyed.
+SOURCES -- five keyless (one of them better with a key), five keyed.
 A keyed source with no key supplied is SKIPPED with a note on stderr; it never
 errors the run. This is the same "optional integration" contract Semantic
 Scholar and CORE already used.
@@ -33,6 +33,7 @@ Scholar and CORE already used.
     scopus          -- --scopus-api-key    / SCOPUS_API_KEY  (+ --scopus-insttoken)
     springer        -- --springer-api-key  / SPRINGER_API_KEY
     core            -- --core-api-key      / CORE_API_KEY
+    wos             -- --wos-api-key       / WOS_API_KEY  (Web of Science Expanded)
 
 RATE LIMITS -- every default below is the number the provider publishes; the
 constant's comment carries the doc URL. One is a flag rather than a constant,
@@ -125,6 +126,10 @@ PUBMED_MIN_INTERVAL_KEYLESS = 1.0 / 3
 PUBMED_MIN_INTERVAL_KEYED = 1.0 / 10
 # DOAJ: 2 requests/second on all API routes. https://doaj.org/api/v4/docs
 DOAJ_MIN_INTERVAL = 0.5
+# Web of Science Expanded: 2/3/5 req/sec on Basic/Advanced/Premium institutional
+# tiers -- throttle to the most conservative published tier.
+# https://developer.clarivate.com/apis/wos
+WOS_MIN_INTERVAL = 0.5
 
 # --- API internals: documented page-size ceilings ---
 OPENALEX_MAX_PER_REQUEST = 200      # docs.openalex.org per-page cap
@@ -140,12 +145,13 @@ PUBMED_EFETCH_BATCH = 500           # NCBI's own recommended efetch batch size
 PUBMED_POST_THRESHOLD = 200         # NCBI: use POST above ~200 UIDs
 DOAJ_MAX_PER_REQUEST = 100          # "The page size limit is 100"
 CORE_MAX_PER_REQUEST = 100          # not officially documented; 100 is the working ceiling
+WOS_MAX_PER_REQUEST = 100           # documented `count` range is 0-100
 
 # Default for the one plan-dependent throttle (overridable via a CLI flag).
 CORE_DEFAULT_MIN_INTERVAL = 60.0 / 25   # personal key = 25 req/min
 
 KEYLESS_SOURCES = ["openalex", "semanticscholar", "crossref", "arxiv", "pubmed", "doaj"]
-KEYED_SOURCES = ["ieee", "scopus", "springer", "core"]
+KEYED_SOURCES = ["ieee", "scopus", "springer", "core", "wos"]
 ALL_SOURCES = KEYLESS_SOURCES + KEYED_SOURCES
 
 
@@ -904,6 +910,126 @@ def search_core(query: str, year_from: int, year_to: int, api_key: str,
     return out[:max_records]
 
 
+# --- API internals: leave unless the API changes ---
+def _wos_as_list(node):
+    """WoS's XML-derived JSON collapses a repeatable field to a bare dict (or
+    bare string, for abstract paragraphs) when there is exactly one, and a
+    list when there are more. Every repeatable field -- names, identifiers,
+    titles, abstract paragraphs -- needs this before iterating. Verified
+    against a real record pulled live from the API, not just documentation.
+    """
+    if node is None:
+        return []
+    if isinstance(node, list):
+        return node
+    return [node]
+
+
+def _wos_titles(rec: dict) -> dict:
+    """type -> content map from static_data.summary.titles.title[] -- 'item'
+    is the paper title, 'source' is the journal/book title."""
+    titles = (rec.get("static_data", {}).get("summary", {})
+              .get("titles", {}).get("title"))
+    out = {}
+    for t in _wos_as_list(titles):
+        if isinstance(t, dict) and t.get("type"):
+            out[t["type"]] = t.get("content") or ""
+    return out
+
+
+def _wos_authors(rec: dict) -> str:
+    names = rec.get("static_data", {}).get("summary", {}).get("names", {}).get("name")
+    out = []
+    for n in _wos_as_list(names):
+        if not isinstance(n, dict):
+            continue
+        if n.get("role") not in (None, "author"):
+            continue  # skip book editors etc. -- only report study authors
+        display = n.get("display_name") or n.get("full_name") or ""
+        if display:
+            out.append(display)
+    return "; ".join(out)
+
+
+def _wos_doi(rec: dict) -> str:
+    idents = (rec.get("dynamic_data", {}).get("cluster_related", {})
+              .get("identifiers", {}).get("identifier"))
+    for ident in _wos_as_list(idents):
+        if isinstance(ident, dict) and ident.get("type") == "doi":
+            return ident.get("value") or ""
+    return ""
+
+
+def _wos_abstract(rec: dict) -> str:
+    abstracts = rec.get("static_data", {}).get("fullrecord_metadata", {}).get("abstracts")
+    if not isinstance(abstracts, dict):
+        return ""
+    paragraphs = []
+    for a in _wos_as_list(abstracts.get("abstract")):
+        if not isinstance(a, dict):
+            continue
+        p = a.get("abstract_text", {})
+        p = p.get("p") if isinstance(p, dict) else None
+        paragraphs.extend(s for s in _wos_as_list(p) if isinstance(s, str))
+    return " ".join(paragraphs)
+
+
+def search_wos(query: str, year_from: int, year_to: int, api_key: str,
+                max_records: int, report: "SourceReport | None" = None) -> list[Candidate]:
+    """Clarivate Web of Science Expanded API.
+
+    Pagination is a plain repeat of usrQuery with firstRecord incremented --
+    verified live that this returns genuinely different records page to page,
+    despite the response also carrying a QueryID (that field tracks the search
+    execution; it is not required to continue paging).
+
+    Rate limit is plan-dependent (2/3/5 req/sec on Basic/Advanced/Premium);
+    WOS_MIN_INTERVAL throttles to the most conservative published tier --
+    raise it if your plan is higher.
+    https://developer.clarivate.com/apis/wos
+    """
+    out: list[Candidate] = []
+    base = "https://wos-api.clarivate.com/api/wos"
+    limiter = RateLimiter(WOS_MIN_INTERVAL)
+    headers = {"X-ApiKey": api_key, "Accept": "application/json"}
+    usr_query = f"TS=({query}) AND PY=({year_from}-{year_to})"
+    _record_query(report, usr_query)
+    first_record = 1
+    while len(out) < max_records:
+        want = min(WOS_MAX_PER_REQUEST, max_records - len(out))
+        params = {
+            "databaseId": "WOS", "usrQuery": usr_query,
+            "count": want, "firstRecord": first_record, "optionView": "FR",
+        }
+        payload = _request("GET", base, limiter, params=params, headers=headers).json()
+        result = payload.get("QueryResult") or {}
+        _record_total(report, result.get("RecordsFound"))
+        records_node = payload.get("Data", {}).get("Records", {}).get("records")
+        recs = _wos_as_list(records_node.get("REC")) if isinstance(records_node, dict) else []
+        if not recs:
+            break
+        for rec in recs:
+            titles = _wos_titles(rec)
+            doi = _wos_doi(rec)
+            out.append(Candidate(
+                source="wos",
+                title=titles.get("item", ""),
+                authors=_wos_authors(rec),
+                year=_as_year(rec.get("static_data", {}).get("summary", {})
+                              .get("pub_info", {}).get("pubyear")),
+                venue=titles.get("source", ""),
+                doi=doi,
+                url=f"https://doi.org/{doi}" if doi else "",
+                abstract=_wos_abstract(rec),
+            ))
+            if len(out) >= max_records:
+                break
+        if len(recs) < want:
+            break
+        first_record += len(recs)
+    return out[:max_records]
+
+
 # --- core logic ---
 def build_runners(args, reports: dict) -> dict:
     """Map source name -> one-arg callable taking its SourceReport. Keyed sources
@@ -939,6 +1065,9 @@ def build_runners(args, reports: dict) -> dict:
                                       args.core_api_key, args.max_per_source,
                                       args.core_min_interval,
                                       r["core"])) if args.core_api_key else None,
+        "wos": (lambda: search_wos(args.query, args.year_from, args.year_to,
+                                    args.wos_api_key, args.max_per_source,
+                                    r["wos"])) if args.wos_api_key else None,
     }
 
 
@@ -947,10 +1076,11 @@ KEY_FLAG_HINT = {
     "scopus": "--scopus-api-key / SCOPUS_API_KEY",
     "springer": "--springer-api-key / SPRINGER_API_KEY",
     "core": "--core-api-key / CORE_API_KEY",
+    "wos": "--wos-api-key / WOS_API_KEY",
 }
 
 SECRET_ARGS = ["s2_api_key", "ieee_api_key", "scopus_api_key", "scopus_insttoken",
-               "springer_api_key", "pubmed_api_key", "core_api_key"]
+               "springer_api_key", "pubmed_api_key", "core_api_key", "wos_api_key"]
 
 
 def make_redactor(args):
@@ -1025,6 +1155,9 @@ def main():
                             "it to 10 req/s; falls back to PUBMED_API_KEY")
     keys.add_argument("--core-api-key", default=os.environ.get("CORE_API_KEY"),
                        help="CORE key (core.ac.uk/services/api); falls back to CORE_API_KEY")
+    keys.add_argument("--wos-api-key", default=os.environ.get("WOS_API_KEY"),
+                       help="Web of Science Expanded API key (developer.clarivate.com); "
+                            "falls back to WOS_API_KEY")
 
     tuning = ap.add_argument_group(
         "plan-dependent rate limits",

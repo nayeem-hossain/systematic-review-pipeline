@@ -87,6 +87,7 @@ _REQUIRED_PHASE_STAGES = ("search", "dedup", "prescreen", "review_gate")
 _KEYED_SOURCE_FIELD = {
     "ieee": "ieee_api_key", "scopus": "scopus_api_key",
     "springer": "springer_api_key", "core": "core_api_key",
+    "wos": "wos_api_key",
 }
 
 _STOPWORDS = {
@@ -551,9 +552,12 @@ def new_review_wizard(console: Console, runs_dir: Path):
     springer_api_key = _ask_secret(
         "Springer Nature API key (unlocks Springer; free self-signup at "
         "dev.springernature.com)", "SPRINGER_API_KEY")
+    wos_api_key = _ask_secret(
+        "Web of Science Expanded API key (unlocks Web of Science; needs an institutional "
+        "subscription; developer.clarivate.com)", "WOS_API_KEY")
 
     _h("Which literature databases to query. Space toggles a source, Enter confirms. The "
-       "keyless sources are pre-checked. IEEE / Scopus / Springer / CORE need the matching "
+       "keyless sources are pre-checked. IEEE / Scopus / Springer / CORE / WoS need the matching "
        "key above -- if you check one without a key it is skipped with a note.")
     sources = questionary.checkbox(
         "Sources to search:",
@@ -568,6 +572,7 @@ def new_review_wizard(console: Console, runs_dir: Path):
             questionary.Choice("scopus", checked=bool(scopus_api_key.strip())),
             questionary.Choice("springer", checked=bool(springer_api_key.strip())),
             questionary.Choice("core", checked=bool(core_api_key.strip())),
+            questionary.Choice("wos", checked=bool(wos_api_key.strip())),
         ],
     ).ask()
     if not sources:
@@ -619,7 +624,7 @@ def new_review_wizard(console: Console, runs_dir: Path):
         s2_api_key=s2_api_key.strip(), pubmed_api_key=pubmed_api_key.strip(),
         core_api_key=core_api_key.strip(), ieee_api_key=ieee_api_key.strip(),
         scopus_api_key=scopus_api_key.strip(), scopus_insttoken=scopus_insttoken.strip(),
-        springer_api_key=springer_api_key.strip(),
+        springer_api_key=springer_api_key.strip(), wos_api_key=wos_api_key.strip(),
         sources=sources, max_per_source=max_per_source, n_phases=n_phases,
         title_threshold=title_threshold, assist_tool_name=assist_tool_name.strip(),
         reviewer=reviewer.strip(),

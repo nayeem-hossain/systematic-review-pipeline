@@ -185,6 +185,74 @@ class TestDedupFuzzyPass:
         assert len(canonical_ids(dedup(rows, title_threshold=50))) == 1
 
 
+class TestCanonicalPrefersAbstract:
+    """Canonical-record selection used to be pure first-seen order, with no
+    awareness of which duplicate actually carries an abstract. That happened to
+    mostly work only because keyless sources (often abstract-bearing) are queried
+    before keyed ones like Scopus/IEEE (frequently abstract-less) -- incidental,
+    untested, and does nothing for a paper found only by two abstract-less
+    sources. Canonical selection now explicitly prefers: has DOI, then has
+    abstract, then first-seen -- DOI-citability still wins over abstract
+    richness, matching test_canonical_keeps_the_citable_doi's existing
+    guarantee."""
+
+    def _blank_abstract(self, df, id_):
+        df.loc[df["id"] == id_, "abstract"] = ""
+        return df
+
+    def test_doi_exact_duplicate_prefers_the_row_with_an_abstract(self):
+        df = make_candidates([
+            (1, "Paper A", "Jane Smith", "10.1/a", 2021),
+            (2, "Paper A (repost)", "Jane Smith", "10.1/a", 2021),
+        ])
+        df = self._blank_abstract(df, 1)  # first-seen has NO abstract
+        result = dedup(df)
+        survivor = result[result["duplicate_of"].isna()].iloc[0]
+        assert survivor["id"] == 2
+        assert survivor["abstract"] == "abstract text"
+
+    def test_fuzzy_title_duplicate_prefers_the_row_with_an_abstract(self):
+        df = make_candidates([
+            (1, "Federated Learning for IDS", "A Author", "", 2020),
+            (2, "Federated Learning for IDS", "A Author", "", 2020),
+        ])
+        df = self._blank_abstract(df, 1)
+        result = dedup(df)
+        survivor = result[result["duplicate_of"].isna()].iloc[0]
+        assert survivor["id"] == 2
+
+    def test_doi_presence_still_outranks_abstract_presence(self):
+        """A DOI-bearing record must stay canonical even if it has no abstract
+        and its DOI-less duplicate does -- citability is the primary axis,
+        abstract richness only breaks ties within it."""
+        df = make_candidates([
+            (1, "Federated Learning for IDS", "A Author", "", 2020),
+            (2, "Federated Learning for IDS", "A Author", "10.1109/x", 2021),
+        ])
+        df = self._blank_abstract(df, 2)  # the DOI-bearing row has no abstract
+        result = dedup(df)
+        survivor = result[result["duplicate_of"].isna()].iloc[0]
+        assert survivor["id"] == 2
+        assert survivor["doi"] == "10.1109/x"
+
+    def test_equal_abstract_presence_falls_back_to_first_seen(self):
+        df = make_candidates([
+            (1, "Paper A", "Jane Smith", "10.1/a", 2021),
+            (2, "Paper A (repost)", "Jane Smith", "10.1/a", 2021),
+        ])
+        result = dedup(df)  # both have "abstract text" via make_candidates
+        survivor = result[result["duplicate_of"].isna()].iloc[0]
+        assert survivor["id"] == 1
+
+    def test_missing_abstract_column_does_not_crash(self):
+        df = pd.DataFrame([
+            {"id": 1, "title": "T", "authors": "Jane Smith", "doi": "10.1/a", "year": 2021},
+            {"id": 2, "title": "T", "authors": "Jane Smith", "doi": "10.1/a", "year": 2021},
+        ])
+        result = dedup(df)
+        assert len(result[result["duplicate_of"].isna()]) == 1
+
+
 class TestDedupEdgeCases:
     def test_empty_frame(self):
         df = dedup(pd.DataFrame(columns=["id", "title", "authors", "doi", "year"]))
