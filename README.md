@@ -403,6 +403,20 @@ AND
  [Title: "federated learning"]]
 ```
 
+**Web of Science, Advanced Search syntax** (this is what `search.py --wos-api-key`
+actually sends, via `TS=` -- Topic, which covers title + abstract + author
+keywords + Keywords Plus):
+
+```
+TS=("intrusion detection" OR "IDS" OR "NIDS" OR "anomaly detection" OR
+    "network intrusion")
+AND
+TS=("machine learning" OR "deep learning" OR "artificial intelligence" OR
+    "neural network" OR "ensemble" OR "transformer" OR "GAN" OR
+    "federated learning")
+AND PY=(2018-2026)
+```
+
 **Dataset names (CIC-IDS2017, UNSW-NB15, NSL-KDD) and target venues (IEEE
 TIFS, IEEE TDSC, USENIX Security, NDSS, ACM CCS, Computers & Security, IEEE
 Access) are deliberately not in the Title-field strings above.** Dataset names
@@ -432,20 +446,21 @@ mention, say, "ensemble" in an unrelated statistical sense.
 
 #### Database-specific syntax differences
 
-| | IEEE Xplore | ACM Digital Library | Scopus |
-|---|---|---|---|
-| Field qualifier | Repeat `"Document Title":` before **every** term | Wrap **every** term in its own `[Title: "..."]` bracket | One `TITLE-ABS-KEY(...)` wrapping the *entire* boolean expression |
-| Default search field | None -- field must be explicit per term | None -- field must be explicit per term | `TITLE-ABS-KEY` covers title + abstract + author keywords, not title alone |
-| Year filter | UI facet or separate filter parameter | UI facet (Publication Date range) | Inline operators: `PUBYEAR > 2017 AND PUBYEAR < 2027` |
-| Phrase matching | Double quotes | Double quotes | Double quotes |
-| Boolean operators | `AND`/`OR`/`NOT`, conventionally capitalized | `AND`/`OR`/`NOT` | `AND`/`OR`/`AND NOT`, case-insensitive |
+| | IEEE Xplore | ACM Digital Library | Scopus | Web of Science |
+|---|---|---|---|---|
+| Field qualifier | Repeat `"Document Title":` before **every** term | Wrap **every** term in its own `[Title: "..."]` bracket | One `TITLE-ABS-KEY(...)` wrapping the *entire* boolean expression | One `TS=(...)` per clause (or `TI=`/`AU=`/`SO=` for title/author/source-only) |
+| Default search field | None -- field must be explicit per term | None -- field must be explicit per term | `TITLE-ABS-KEY` covers title + abstract + author keywords, not title alone | `TS=` (Topic) covers title + abstract + author keywords + Keywords Plus |
+| Year filter | UI facet or separate filter parameter | UI facet (Publication Date range) | Inline operators: `PUBYEAR > 2017 AND PUBYEAR < 2027` | Inline: `PY=(2018-2026)` |
+| Phrase matching | Double quotes | Double quotes | Double quotes | Double quotes |
+| Boolean operators | `AND`/`OR`/`NOT`, conventionally capitalized | `AND`/`OR`/`NOT` | `AND`/`OR`/`AND NOT`, case-insensitive | `AND`/`OR`/`NOT`, conventionally capitalized |
 
 Draft each database's string separately from the same thematic block list --
 don't try to write one universal string and hope it parses everywhere. Also
 decide up front whether you're searching Title-only or Title-Abstract-Keyword:
-a database that defaults to a broader field (Scopus's `TITLE-ABS-KEY` vs. IEEE
-Xplore/ACM DL's Title-only) will structurally return more records for the same
-thematic blocks -- expect and disclose that yield asymmetry rather than treat
+a database that defaults to a broader field (Scopus's `TITLE-ABS-KEY` and Web
+of Science's `TS=` vs. IEEE Xplore/ACM DL's Title-only) will structurally
+return more records for the same thematic blocks -- expect and disclose that
+yield asymmetry rather than treat
 it as a bug.
 
 **Run the full battery of databases in the first formal search round**,
@@ -922,8 +937,19 @@ that:
 Fuzzy matching runs across year boundaries and across records that already have
 DOIs, because the most common duplicate in a real review is an arXiv preprint and
 its published version, which differ in **both** year and DOI. Those merges are
-labelled `fuzzy_title_crossdoi_<score>` so you can audit them. The canonical
-survivor is preferentially the record that carries a DOI, so it stays citable.
+labelled `fuzzy_title_crossdoi_<score>` so you can audit them.
+
+**Canonical-record selection**, once a cluster of duplicates is identified, is a
+strict priority order: has a DOI (stays citable) > has an abstract (screenable
+without hunting down the full text) > first-seen. DOI-presence is deliberately
+primary -- `references.bib` is built from the canonical record, and an uncitable
+survivor is a bigger loss than a thin one -- so a DOI-bearing record stays
+canonical even if a DOI-less duplicate happens to carry a richer abstract.
+Abstract-presence only breaks ties among records that are otherwise equal on
+citability; it exists because keyed sources like Scopus/IEEE are frequently
+abstract-less (entitlement-gated), so without this a paper found only by two
+abstract-less sources would silently end up with no abstract for TA screening,
+even when the corpus elsewhere had one.
 
 ### `scripts/screen.py` -- build the screening spreadsheet
 
