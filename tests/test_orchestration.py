@@ -1054,6 +1054,26 @@ class TestRerunSearch:
 
         monkeypatch.setattr(slr, "run_subprocess", fake)
 
+    def _fake_assist_and_gate(self, monkeypatch, n_included=1):
+        """run_ai_assist_loop/run_review_gate are exercised by their own
+        dedicated test classes -- here they're stood in for so these tests
+        stay focused on whether _menu_rerun_search correctly hands off into
+        them, not on re-testing their own internal decision trees (which,
+        unmocked, would need real eligibility criteria and a batch-reply
+        file to get through)."""
+        calls = []
+
+        def fake_assist(state, cfg, prov, phase, pdir, console):
+            calls.append(("assist_ta", phase))
+
+        def fake_gate(state, cfg, prov, phase, pdir, console):
+            calls.append(("review_gate", phase))
+            state.mark_stage(phase, "review_gate", counts={"n_included": n_included, "n_overridden": 0})
+
+        monkeypatch.setattr(slr, "run_ai_assist_loop", fake_assist)
+        monkeypatch.setattr(slr, "run_review_gate", fake_gate)
+        return calls
+
     def test_no_search_has_ever_run_reports_guidance(self, tmp_path):
         cfg = self._cfg()
         st, prov = self._state_and_prov(tmp_path, cfg)
@@ -1087,6 +1107,7 @@ class TestRerunSearch:
         st.mark_stage(1, "search", counts={"n_hits": 0})
         console = self._console()
         self._fake_run_subprocess(monkeypatch, n_hits=5, n_dupes=1)
+        calls = self._fake_assist_and_gate(monkeypatch)
         monkeypatch.setattr(slr.questionary, "select",
                              self._sequence([1, "Re-run with current settings (no changes)"]))
         monkeypatch.setattr(slr.questionary, "confirm", self._sequence([True]))
@@ -1100,6 +1121,9 @@ class TestRerunSearch:
         assert st2.stage_status(1, "prescreen") == "done"
         events = [e for e in prov.events() if e["event"] == "rerun_search"]
         assert events and events[0]["outcome"] == "done"
+        assert ("assist_ta", 1) in calls
+        assert ("review_gate", 1) in calls
+        assert st2.stage_status(1, "review_gate") == "done"
 
     def test_existing_screening_decisions_trigger_a_loss_warning(self, tmp_path, monkeypatch):
         cfg = self._cfg()
@@ -1123,6 +1147,7 @@ class TestRerunSearch:
         st.mark_stage(1, "search", counts={"n_hits": 0})
         console = self._console()
         self._fake_run_subprocess(monkeypatch, n_hits=2, n_dupes=0)
+        self._fake_assist_and_gate(monkeypatch)
         monkeypatch.setattr(slr.questionary, "select",
                              self._sequence([1, "Edit settings, then re-run"]))
         monkeypatch.setattr(slr.questionary, "confirm", self._sequence([True]))
@@ -1137,10 +1162,11 @@ class TestRerunSearch:
         events = [e for e in prov.events() if e["event"] == "rerun_search"]
         assert events and events[0]["changed_fields"] == ["mailto"]
 
-    def test_stale_downstream_decisions_are_cleared_after_rerun(self, tmp_path, monkeypatch):
-        """assist_ta/review_gate were marked done against the OLD candidates
-        -- after search is redone those counts describe a set of records
-        that no longer exists, so they must stop reporting as 'done'."""
+    def test_stale_review_gate_counts_are_replaced_not_left_stale(self, tmp_path, monkeypatch):
+        """review_gate was marked done against the OLD candidates -- after
+        search is redone, the rerun continues all the way through a fresh
+        review gate (like a normal phase run does), so the stale count gets
+        replaced by a real one instead of just being cleared and abandoned."""
         cfg = self._cfg()
         st, prov = self._state_and_prov(tmp_path, cfg)
         st.phase_dir(1)
@@ -1149,15 +1175,17 @@ class TestRerunSearch:
         st.mark_stage(1, "review_gate", counts={"n_included": 2, "n_overridden": 0})
         console = self._console()
         self._fake_run_subprocess(monkeypatch, n_hits=1, n_dupes=0)
+        calls = self._fake_assist_and_gate(monkeypatch, n_included=999)
         monkeypatch.setattr(slr.questionary, "select",
                              self._sequence([1, "Re-run with current settings (no changes)"]))
         monkeypatch.setattr(slr.questionary, "confirm", self._sequence([True]))
 
         slr._menu_rerun_search(st, cfg, prov, console)
 
+        assert ("assist_ta", 1) in calls
+        assert ("review_gate", 1) in calls
         st2 = RunState.load(st.run_dir)
-        assert st2.stage_status(1, "assist_ta") is None
-        assert st2.stage_status(1, "review_gate") is None
+        assert st2.state["stages"]["1:review_gate"]["counts"]["n_included"] == 999
 
 
 class TestDiagnoseRun:

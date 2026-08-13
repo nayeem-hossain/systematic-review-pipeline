@@ -6,6 +6,18 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-08-13
+
+### Fixed
+
+- "Re-run a phase's search" stopped after search/dedup/prescreen, clearing
+  the phase's AI-assist/review-gate markers but never actually continuing
+  into them -- leaving a freshly re-populated screening.csv with nothing in
+  the consolidation menu able to screen it. It now continues through
+  AI-assist TA screening and the human review gate too, the same sequence a
+  normal phase run goes through, since the consolidation menu has no other
+  action that reaches those steps.
+
 ## [1.2.1] - 2026-08-13
 
 ### Fixed

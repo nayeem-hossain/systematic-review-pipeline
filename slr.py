@@ -2210,12 +2210,16 @@ def _edit_search_settings(cfg: ReviewConfig, console: Console) -> list:
 
 
 def _menu_rerun_search(state: RunState, cfg: ReviewConfig, prov: Provenance, console: Console) -> None:
-    """Re-runs a phase's search -- and its downstream dedup/prescreen, which
-    would otherwise go stale against a fresh candidates.csv -- either with
-    the current settings or after editing them first. This is the fix half
-    of 'Diagnose this run': that action can tell you a phase came back
-    empty, this is how you actually retry it, from the menu, without
-    abandoning the run and starting over."""
+    """Re-runs a phase's search and continues it through dedup, prescreen,
+    AI-assist TA screening, and the human review gate -- the same sequence a
+    normal phase run goes through -- either with the current settings or
+    after editing them first. This is the fix half of 'Diagnose this run':
+    that action can tell you a phase came back empty, this is how you
+    actually retry it and screen the results, from the menu, without
+    abandoning the run and starting over. Continuing all the way through
+    screening (rather than stopping after search) matters because the
+    consolidation menu itself has no other way to reach AI-assist screening
+    or the review gate -- those otherwise only run inside the phase loop."""
     phase_nums = sorted({
         int(key.split(":", 1)[0]) for key in state.state.get("stages", {})
         if key.split(":", 1)[1] == "search"
@@ -2270,21 +2274,25 @@ def _menu_rerun_search(state: RunState, cfg: ReviewConfig, prov: Provenance, con
     state.state[f"phase_{phase}_query"] = query
     state.save()
 
-    # search/dedup/prescreen are cleared so _run_search_dedup_prescreen's own
-    # _should_run_stage() check treats them as pending rather than prompting
-    # ANOTHER "already done -- re-run?" confirm on top of the one just given.
-    for stage in ("search", "dedup", "prescreen"):
+    # All five stages are cleared upfront -- search/dedup/prescreen so
+    # _run_search_dedup_prescreen's own _should_run_stage() check treats them
+    # as pending rather than prompting ANOTHER "already done -- re-run?"
+    # confirm on top of the one just given; assist_ta/review_gate because
+    # whatever they'd previously recorded described the OLD candidate set.
+    for stage in ("search", "dedup", "prescreen", "assist_ta", "review_gate"):
         state.state.get("stages", {}).pop(f"{phase}:{stage}", None)
     state.save()
 
     _run_search_dedup_prescreen(state, cfg, prov, console, phase, pdir, query)
 
-    # assist_ta/review_gate (if they'd run) described the OLD candidate set --
-    # clearing them stops the tool from reporting a phase "done" against
-    # records that no longer exist after this redo.
-    for stage in ("assist_ta", "review_gate"):
-        state.state.get("stages", {}).pop(f"{phase}:{stage}", None)
-    state.save()
+    # Continue through the same steps a normal phase run goes through -- the
+    # consolidation menu itself has no other action that reaches these, so
+    # stopping after search would leave a freshly re-populated screening.csv
+    # with nothing offering to screen it.
+    if _should_run_stage(state, phase, "assist_ta", "AI-assist TA screening"):
+        run_ai_assist_loop(state, cfg, prov, phase, pdir, console)
+    if _should_run_stage(state, phase, "review_gate", "Human review gate"):
+        run_review_gate(state, cfg, prov, phase, pdir, console)
 
     n_hits = state.state.get("stages", {}).get(f"{phase}:search", {}).get("counts", {}).get("n_hits")
     outcome = "done" if state.stage_status(phase, "search") == "done" else "search_failed"
@@ -2452,9 +2460,9 @@ _CONSOLIDATION_ACTION_HELP = {
         "Per-phase funnel of stage counts; flags the first stage that returned zero and any "
         "stage marked done whose output file is missing. Start here if a run came back empty.",
     "Re-run a phase's search (with or without changes)":
-        "Re-runs search + dedup + prescreen for one phase, as-is or after editing mailto/"
-        "year range/sources/max-per-source first. Existing screening decisions for that "
-        "phase are lost -- always confirms before doing anything.",
+        "Re-runs search through the review gate for one phase, as-is or after editing "
+        "mailto/year range/sources/max-per-source first. Existing screening decisions for "
+        "that phase are lost -- always confirms before doing anything.",
     "Manage API keys (.env location, add/update/delete)":
         "Shows the .env path in use and lets you add, update, or delete API keys stored there.",
     "Check for updates":
