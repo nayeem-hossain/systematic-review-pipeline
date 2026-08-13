@@ -302,6 +302,20 @@ class Provenance:
                 lines.append(f"- **Phases:** {config['n_phases']}")
             if config.get("mailto"):
                 lines.append(f"- **Mailto:** {config['mailto']}")
+            version_events = [e for e in self.events() if e.get("event") == "tool_version"]
+            if version_events:
+                versions_seen = []
+                for e in version_events:
+                    v = e.get("version")
+                    if v and v not in versions_seen:
+                        versions_seen.append(v)
+                latest = version_events[-1].get("version")
+                line = f"- **Tool version:** {latest}"
+                earlier = [v for v in versions_seen if v != latest]
+                if earlier:
+                    line += (f" (this review was also worked on under {', '.join(earlier)} -- "
+                              f"see the search & processing log for exactly when)")
+                lines.append(line)
             if config.get("registration_id"):
                 lines.append(f"- **Protocol registration:** {config['registration_id']}")
             else:

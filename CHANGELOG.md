@@ -6,6 +6,24 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-08-13
+
+### Fixed
+
+- PROVENANCE.md never showed the tool version anywhere except buried inside
+  the raw Search & processing log table -- and a review worked on across an
+  upgrade logs a `tool_version` event on every resume, so a reader had to
+  find and compare several log rows themselves to work out which version
+  actually produced the file. The Configuration section now has a single
+  **Tool version:** line naming the latest, and names any earlier version(s)
+  the review was also worked on under if it changed mid-review.
+- The reporting-bias-assessment wizard prompt (PRISMA item 21, only asked if
+  you say the review will meta-analyze) explained the PRISMA angle but never
+  explained what a reporting-bias assessment or funnel plot actually checks
+  for in plain terms -- added a hint explaining the concept (published
+  studies can be a biased sample of what was actually found; a funnel plot
+  is how that's checked) before asking what method you'll use.
+
 ## [1.2.3] - 2026-08-13
 
 ### Fixed

@@ -1,6 +1,6 @@
 [project]
 name = "systematic-review-pipeline"
-version = "1.2.3"
+version = "1.2.4"
 description = "A guided, auditable systematic-literature-review pipeline: search, dedup, screen, extract, appraise, and report against PRISMA 2020."
 readme = "README.md"
 requires-python = ">=3.10"

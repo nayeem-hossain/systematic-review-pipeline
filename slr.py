@@ -464,6 +464,12 @@ def new_review_wizard(console: Console, runs_dir: Path):
         return None
     will_meta_analyze = bool(meta_analyze_answer)
     if will_meta_analyze:
+        _h("A reporting-bias assessment checks whether the studies that got published (and "
+           "so could be found by your search) are a skewed sample -- e.g. only the studies "
+           "with dramatic results made it into print, while null/negative ones went unpublished. "
+           "A funnel plot does this by plotting each study's effect size against its "
+           "precision: a lopsided plot suggests bias, a symmetric one doesn't. This is a note "
+           "of INTENT for your protocol, not something the tool computes for you.")
         reporting_bias_assessment = (questionary.text(
             "Describe the reporting-bias assessment you will perform (e.g. funnel plot + "
             "Egger's test on the primary outcome):", default="").ask() or "").strip()
