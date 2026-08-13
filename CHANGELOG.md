@@ -6,6 +6,21 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-13
+
+### Fixed
+
+- All "run this to update" guidance (the startup nag, the on-demand "Check
+  for updates" action, and the README) now says
+  `pipx upgrade --force systematic-review-pipeline`. Installing from
+  `git+https://...` rebuilds the wheel from source on every upgrade, and the
+  Windows launcher `pipx upgrade` generates for `slr.exe` comes out
+  byte-different almost every time even when nothing meaningful changed --
+  pipx's own shim-safety-check (protecting a shim it doesn't recognize as
+  its own) then refuses to touch the PATH launcher, silently leaving the old
+  version running. `--force` tells pipx to overwrite it as part of the same
+  upgrade, instead of requiring a separate `pipx reinstall`.
+
 ## [1.2.0] - 2026-08-13
 
 ### Added

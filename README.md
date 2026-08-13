@@ -62,30 +62,28 @@ counting behavior partway through a review's own corpus, which is worse than
 staying on the version you started with). Update yourself with:
 
 ```bash
-pipx upgrade systematic-review-pipeline
+pipx upgrade --force systematic-review-pipeline
 ```
 
-If that prints a warning like:
+The `--force` matters here specifically because this installs from
+`git+https://...` rather than a pinned PyPI release, so every upgrade
+rebuilds the wheel from source -- the launcher pip generates for `slr.exe`
+comes out byte-different almost every time even when nothing you'd care
+about changed, and pipx's own shim-safety-check (which protects a shim it
+doesn't recognize as its own from being silently overwritten) flags that as
+a mismatch and refuses to touch it. Without `--force` you can see the
+package itself upgrade correctly (`pipx list` shows the new version) while
+`slr` on your PATH keeps running the old one, with a warning like:
 
 ```
 File exists at C:\Users\<you>\.local\bin\slr.exe and does not match
 ...\pipx\venvs\systematic-review-pipeline\Scripts\slr.exe. Not modifying.
 ```
 
-the package itself upgraded correctly (`pipx list` will show the new
-version) -- but pipx declined to touch the launcher shim on your PATH
-because its contents don't match what pipx expects there, so typing `slr`
-may still run the old version until you fix it. This is pipx's own
-local-install bookkeeping (it protects against overwriting a shim it
-doesn't recognize as its own), not something specific to this package --
-any pipx-installed tool can hit it. Fix it with:
-
-```bash
-pipx reinstall systematic-review-pipeline
-```
-
-If the same warning reappears, delete the exact file the warning names,
-then run `pipx reinstall systematic-review-pipeline` again.
+`--force` tells pipx to overwrite it as part of the same upgrade -- no
+separate reinstall step needed. If you already hit this warning on a plain
+`pipx upgrade`, either re-run with `--force` or run
+`pipx reinstall systematic-review-pipeline` once to get back in sync.
 
 You can also check on demand from the guided TUI's consolidation menu's
 **"Check for updates"** action, which always reports a result (up to date /

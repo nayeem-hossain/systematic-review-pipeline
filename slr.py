@@ -2546,7 +2546,7 @@ def _maybe_print_update_notice(console: Console) -> None:
     elif outcome == "outdated":
         console.print(
             f"[yellow]A newer version is available: {latest} (you're on {_VERSION}).[/] "
-            f"Run 'pipx upgrade systematic-review-pipeline' to update, or see "
+            f"Run 'pipx upgrade --force systematic-review-pipeline' to update, or see "
             f"{_CHANGELOG_URL}"
         )
     else:
@@ -2574,7 +2574,7 @@ def _menu_check_for_updates(state: RunState, cfg: ReviewConfig, prov: Provenance
     elif outcome == "outdated":
         console.print(
             f"[yellow]A newer version is available: {latest} (you're on {_VERSION}).[/] "
-            f"Run 'pipx upgrade systematic-review-pipeline' to update."
+            f"Run 'pipx upgrade --force systematic-review-pipeline' to update."
         )
     else:
         console.print(f"[green]Up to date[/] (v{_VERSION}).")
