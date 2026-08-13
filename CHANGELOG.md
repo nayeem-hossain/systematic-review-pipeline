@@ -6,7 +6,52 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
-## [1.0.1] - 2026-08-14
+## [1.1.0] - 2026-08-13
+
+### Fixed
+
+- `slr.py` never called `load_dotenv()` -- `.env`-based API key auto-detection
+  was silently non-functional for the entire guided TUI, on both a git-clone
+  checkout and a `pipx` install, contradicting `.env.example`'s own
+  documented claim that it loads automatically.
+- `.env`'s default path resolved relative to wherever `srp/env.py` itself was
+  installed, rather than the current working directory -- correct by
+  accident for a git clone (whose documented workflow already puts you at
+  the repo root), but broken for a `pipx` install, where that path landed
+  inside `pipx`'s internal venv, nowhere a user would ever find or edit it.
+  It now resolves against the current working directory, matching wherever
+  `slr` was actually run from.
+- The setup wizard's inclusion/exclusion-criteria prompts, and the API-key
+  prompt's "[detected in .env]" message, embedded a multi-line example
+  directly in the prompt text with no trailing newline, so questionary
+  rendered the input cursor in the wrong place on screen.
+- Two checkbox prompts (critical-appraisal instrument selection, MMAT design
+  selection) gave no indication that Space toggles a choice and Enter
+  confirms -- the other checkboxes in the wizard already said so.
+
+### Added
+
+- The startup banner now always shows the running version, and the update
+  check leaves a visible trace either way -- a dim confirmation when up to
+  date, a nag only when a real newer release exists -- instead of staying
+  silent whenever there was nothing to complain about.
+- "Diagnose this run" consolidation-menu action: a per-phase funnel of
+  search/dedup/prescreen/review-gate counts, flagging the first stage that
+  returned zero and any stage marked "done" whose output file isn't actually
+  on disk -- the two symptoms a review that came back empty for no visible
+  reason actually presents as.
+- "Manage API keys" consolidation-menu action: shows the `.env` path
+  actually in use, and adds/updates or deletes individual keys (or all of
+  them) without hand-editing the file or knowing where `pipx` put anything.
+- Every consolidation-menu action now has a one-line description, shown
+  once before the menu prompt, instead of a bare list of labels.
+- The setup wizard's worked examples (topic, keyword blocks, inclusion/
+  exclusion criteria) now use a generic, clearly-labeled illustrative
+  example (pair programming vs. code quality) instead of this project's own
+  ML-IDS research topic, so they read as an example rather than a hint about
+  what to search for.
+
+## [1.0.1] - 2026-08-13
 
 ### Fixed
 

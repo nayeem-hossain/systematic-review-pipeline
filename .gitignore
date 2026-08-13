@@ -23,3 +23,7 @@ pdfs/
 # Playwright MCP tool session artifacts (console logs, page snapshots) -- not
 # project source.
 .playwright-mcp/
+
+# Scratch testbed for reproducing bugs against a pipx-style install -- not
+# project source, never committed.
+_testbed/

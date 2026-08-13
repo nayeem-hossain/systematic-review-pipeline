@@ -8,6 +8,7 @@ being reported as a pass, a corrupt file being laundered into an authoritative
 something is *refused* or *reported* rather than defaulted.
 """
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from rich.console import Console
 
 import slr
 from srp.config import ReviewConfig
+from srp.env import parse_env_text
 from srp.provenance import Provenance
 from srp.state import RunState
 
@@ -112,7 +114,7 @@ class TestProvenanceCoverage:
         "_menu_verify_citations", "_menu_extract", "_menu_figures",
         "_menu_export_refs", "_menu_export_exclusions", "_menu_kappa",
         "_menu_review_self_appraisal", "_menu_review_extraction",
-        "_menu_check_for_updates",
+        "_menu_check_for_updates", "_menu_diagnose_run", "_menu_manage_api_keys",
     ])
     def test_action_takes_provenance_and_logs(self, func):
         import inspect
@@ -800,6 +802,7 @@ class TestMainHandlesCorruptCsv:
         def boom(runs_dir, console, preselect_run=None):
             raise slr.CorruptCsvError("runs/x/phase_1/screening.csv could not be parsed: boom")
 
+        monkeypatch.setattr(slr, "load_dotenv", lambda *a, **kw: [])
         monkeypatch.setattr(slr, "main_interactive", boom)
         monkeypatch.setattr(sys, "argv", ["slr.py", "--runs-dir", str(tmp_path)])
 
@@ -814,29 +817,129 @@ class TestMainHandlesCorruptCsv:
         def boom(runs_dir, console, preselect_run=None):
             raise slr.CorruptCsvError("bad file")
 
+        monkeypatch.setattr(slr, "load_dotenv", lambda *a, **kw: [])
         monkeypatch.setattr(slr, "main_interactive", boom)
         monkeypatch.setattr(sys, "argv", ["slr.py", "--runs-dir", str(tmp_path)])
         assert slr.main() != 130  # 130 is KeyboardInterrupt's code, not this error's
 
 
-class TestUpdateNotice:
-    """The startup nag must never block or spam -- silent when up to date, a
-    check failure, or a dev/uninstalled build, and a single visible line only
-    when a real newer release exists."""
+class TestAskSecretPromptRendering:
+    """questionary renders a multi-line message's cursor immediately after the
+    last character, not on a fresh line -- for _ask_secret's two-line
+    '[detected in .env]' message this put the input line in a visibly wrong
+    spot. A trailing newline in the message forces the input onto its own
+    line (this is now more likely to be hit at all, now that load_dotenv()
+    actually runs -- see TestMainLoadsDotenv)."""
 
-    def test_prints_nothing_when_up_to_date_or_check_fails(self, monkeypatch):
+    def test_detected_key_message_ends_with_a_newline(self, monkeypatch):
+        captured = {}
+
+        class _FakeAnswer:
+            def ask(self):
+                return "reused-value"
+
+        def fake_text(message, default=""):
+            captured["message"] = message
+            return _FakeAnswer()
+
+        monkeypatch.setattr(slr.questionary, "text", fake_text)
+        monkeypatch.setenv("S2_API_KEY", "already-set")
+
+        slr._ask_secret("Semantic Scholar API key", "S2_API_KEY")
+
+        assert captured["message"].endswith("\n")
+        assert "[detected in .env" in captured["message"]
+
+    def test_undetected_key_message_is_a_single_line(self, monkeypatch):
+        captured = {}
+
+        class _FakeAnswer:
+            def ask(self):
+                return ""
+
+        def fake_text(message, default=""):
+            captured["message"] = message
+            return _FakeAnswer()
+
+        monkeypatch.setattr(slr.questionary, "text", fake_text)
+        monkeypatch.delenv("S2_API_KEY", raising=False)
+
+        slr._ask_secret("Semantic Scholar API key", "S2_API_KEY")
+
+        assert "\n" not in captured["message"]
+
+
+class TestMainLoadsDotenv:
+    """main() must call load_dotenv() itself -- it's the single top-level entry
+    point for both a git-clone `python slr.py` and a pipx-installed `slr`, and
+    nothing else in the guided TUI ever did, so a .env silently did nothing
+    regardless of install method."""
+
+    def test_main_calls_load_dotenv(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(slr, "load_dotenv", lambda *a, **kw: calls.append(True))
+        monkeypatch.setattr(slr, "main_interactive", lambda runs_dir, console, preselect_run=None: None)
+        monkeypatch.setattr(sys, "argv", ["slr.py", "--runs-dir", str(tmp_path)])
+
+        slr.main()
+
+        assert calls == [True]
+
+
+class TestStartupBanner:
+    def test_banner_always_shows_the_running_version(self, tmp_path, monkeypatch):
         console = Console(file=io.StringIO())
-        monkeypatch.setattr(slr, "check_for_update", lambda v: None)
+        monkeypatch.setattr(slr, "_VERSION", "1.2.3")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: "v1.2.3")
+        monkeypatch.setattr(slr.RunState, "list_runs", staticmethod(lambda runs_dir: []))
+        monkeypatch.setattr(slr, "new_review_wizard", lambda console, runs_dir: None)
+
+        slr.main_interactive(tmp_path, console)
+
+        assert "1.2.3" in console.file.getvalue()
+
+
+class TestUpdateNotice:
+    """The startup line must never block or spam, and it must never leave the
+    user unable to tell whether the check even ran -- it always shows the
+    running version, plus a dim confirmation when up to date or a yellow nag
+    only when a real newer release exists."""
+
+    def test_shows_version_and_confirms_up_to_date(self, monkeypatch):
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "_VERSION", "1.0.0")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: "v1.0.0")
         slr._maybe_print_update_notice(console)
-        assert console.file.getvalue() == ""
+        text = console.file.getvalue()
+        assert "1.0.0" in text
+        assert "up to date" in text.lower()
 
     def test_prints_notice_when_a_newer_release_exists(self, monkeypatch):
         console = Console(file=io.StringIO())
-        monkeypatch.setattr(slr, "check_for_update", lambda v: "v9.9.9")
+        monkeypatch.setattr(slr, "_VERSION", "1.0.0")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: "v9.9.9")
         slr._maybe_print_update_notice(console)
         text = console.file.getvalue()
         assert "9.9.9" in text
         assert "pipx upgrade" in text
+
+    def test_still_shows_version_when_the_check_itself_fails(self, monkeypatch):
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "_VERSION", "1.0.0")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: None)
+        slr._maybe_print_update_notice(console)
+        text = console.file.getvalue()
+        assert "1.0.0" in text
+        assert "up to date" not in text.lower()
+
+    def test_dev_build_is_not_falsely_claimed_up_to_date(self, monkeypatch):
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr, "_VERSION", "0.0.0-dev")
+        monkeypatch.setattr(slr, "latest_release_version", lambda: "v1.0.0")
+        slr._maybe_print_update_notice(console)
+        text = console.file.getvalue().lower()
+        assert "source" in text
+        assert "up to date" not in text
 
 
 class TestMenuCheckForUpdates:
@@ -900,10 +1003,233 @@ class TestMenuCheckForUpdates:
         assert events and events[0]["outcome"] == "dev_build"
 
 
+class TestDiagnoseRun:
+    """The user's real report: a test run returned 0 hits from every source,
+    and phase_1/phase_2 folders ended up empty, with no trail explaining
+    either -- state.json and provenance.jsonl both claimed success. This menu
+    action gives that trail: a per-phase funnel table, the first stage where
+    a count drops to zero, and any stage marked done whose output file isn't
+    actually on disk."""
+
+    def _cfg(self):
+        return ReviewConfig(topic="t", mailto="a@b.c")
+
+    def _state_and_prov(self, tmp_path, cfg):
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        return st, prov
+
+    def _console(self):
+        return Console(file=io.StringIO())
+
+    def test_no_stages_run_yet_is_reported_plainly(self, tmp_path):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = self._console()
+
+        slr._menu_diagnose_run(st, cfg, prov, console)
+
+        assert "no stages" in console.file.getvalue().lower()
+
+    def test_healthy_funnel_has_no_zero_drop_or_missing_file_flags(self, tmp_path):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = self._console()
+        pdir = st.phase_dir(1)
+        (pdir / "candidates.csv").write_text("id\n1\n2\n", encoding="utf-8")
+        (pdir / "candidates_dedup.csv").write_text("id\n1\n2\n", encoding="utf-8")
+        (pdir / "screening.csv").write_text("id\n1\n2\n", encoding="utf-8")
+        st.mark_stage(1, "search", counts={"n_hits": 2})
+        st.mark_stage(1, "dedup", counts={"n_in": 2, "n_out": 2, "n_dupes": 0})
+        st.mark_stage(1, "prescreen", counts={"n_rows": 2})
+        st.mark_stage(1, "review_gate", counts={"n_included": 1, "n_overridden": 0})
+
+        slr._menu_diagnose_run(st, cfg, prov, console)
+
+        text = console.file.getvalue().lower()
+        assert "zero-drop" not in text
+        assert "missing" not in text
+
+    def test_zero_hits_at_search_is_flagged_as_the_first_zero_drop_stage(self, tmp_path):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = self._console()
+        pdir = st.phase_dir(1)
+        (pdir / "candidates.csv").write_text("id\n", encoding="utf-8")
+        st.mark_stage(1, "search", counts={"n_hits": 0})
+
+        slr._menu_diagnose_run(st, cfg, prov, console)
+
+        assert "zero-drop" in console.file.getvalue().lower()
+
+    def test_stage_marked_done_with_a_missing_output_file_is_flagged(self, tmp_path):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = self._console()
+        st.phase_dir(1)  # creates the phase dir, but never writes candidates.csv
+        st.mark_stage(1, "search", counts={"n_hits": 5})
+
+        slr._menu_diagnose_run(st, cfg, prov, console)
+
+        text = console.file.getvalue().lower()
+        assert "does not exist" in text or "missing" in text
+
+    def test_logs_a_diagnose_event_to_provenance(self, tmp_path):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = self._console()
+        st.mark_stage(1, "search", counts={"n_hits": 1})
+
+        slr._menu_diagnose_run(st, cfg, prov, console)
+
+        events = [e for e in prov.events() if e["event"] == "diagnose_run"]
+        assert events
+
+
+class TestConsolidationMenuLegend:
+    """The consolidation menu used to be 18 bare labels with no indication of
+    what each one does or produces -- this legend prints a one-line
+    description for every action before the menu prompt, so nothing in the
+    real actions dict can silently drift out of sync with its description."""
+
+    def test_every_real_action_has_a_description_no_placeholder_shown(self, tmp_path, monkeypatch):
+        cfg = ReviewConfig(topic="t", mailto="a@b.c")
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        console = Console(file=io.StringIO(), width=200)
+        monkeypatch.setattr(slr.questionary, "select",
+                             lambda *a, **kw: type("F", (), {"ask": lambda self: "Finish"})())
+
+        slr.consolidation_menu(st, cfg, prov, console)
+
+        text = console.file.getvalue()
+        assert "[no description]" not in text
+        assert "Diagnose this run" in text
+        assert "Manage API keys" in text
+
+
+class TestManageApiKeys:
+    """The user's real question, after a pipx install: 'where is the .env
+    file, and how do I add/remove keys from it?' -- this menu action shows
+    the .env path in use (resolved from cwd, matching load_dotenv()), and
+    lets the user add/update or delete keys without hand-editing the file or
+    knowing where pipx put anything."""
+
+    def _fake(self, answer):
+        return type("F", (), {"ask": lambda self: answer})()
+
+    def _sequence(self, answers):
+        it = iter(answers)
+        return lambda *a, **kw: self._fake(next(it))
+
+    def _cfg(self):
+        return ReviewConfig(topic="t", mailto="a@b.c")
+
+    def _state_and_prov(self, tmp_path, cfg):
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        return st, prov
+
+    def test_shows_the_env_path_in_use_and_key_status(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("S2_API_KEY=already-set\n", encoding="utf-8")
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = Console(file=io.StringIO(), width=200)  # avoid wrapping the long tmp_path
+        monkeypatch.setattr(slr.questionary, "select", self._sequence(["Back"]))
+
+        slr._menu_manage_api_keys(st, cfg, prov, console)
+
+        text = console.file.getvalue()
+        assert str(tmp_path / ".env") in text
+        assert "S2_API_KEY" in text
+
+    def test_add_or_update_writes_to_env_and_current_process(self, tmp_path, monkeypatch):
+        # _menu_manage_api_keys mutates os.environ directly (not through
+        # monkeypatch), so a monkeypatch.delenv() called AFTER that raw
+        # mutation would capture the raw value as what to restore at
+        # teardown -- which sets it right back instead of clearing it. A
+        # plain try/finally sidesteps that trap.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("S2_API_KEY", raising=False)
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence(["Add or update a key", "S2_API_KEY"]))
+        monkeypatch.setattr(slr.questionary, "text", self._sequence(["new-value"]))
+
+        try:
+            slr._menu_manage_api_keys(st, cfg, prov, console)
+
+            assert parse_env_text((tmp_path / ".env").read_text(encoding="utf-8"))["S2_API_KEY"] == "new-value"
+            assert os.environ["S2_API_KEY"] == "new-value"
+            events = [e for e in prov.events() if e["event"] == "manage_api_keys"]
+            assert events and events[0]["action"] == "set"
+        finally:
+            os.environ.pop("S2_API_KEY", None)
+
+    def test_delete_a_key_removes_it_from_env_and_current_process(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("S2_API_KEY=secret\n", encoding="utf-8")
+        monkeypatch.setenv("S2_API_KEY", "secret")
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence(["Delete a key", "S2_API_KEY"]))
+        monkeypatch.setattr(slr.questionary, "confirm", self._sequence([True]))
+
+        slr._menu_manage_api_keys(st, cfg, prov, console)
+
+        assert "S2_API_KEY" not in parse_env_text((tmp_path / ".env").read_text(encoding="utf-8"))
+        assert "S2_API_KEY" not in os.environ
+        events = [e for e in prov.events() if e["event"] == "manage_api_keys"]
+        assert events and events[0]["action"] == "delete"
+
+    def test_delete_all_keys_removes_every_managed_key(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            "S2_API_KEY=a\nCORE_API_KEY=b\nMAILTO=keep@me.com\n", encoding="utf-8")
+        monkeypatch.setenv("S2_API_KEY", "a")
+        monkeypatch.setenv("CORE_API_KEY", "b")
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "select", self._sequence(["Delete ALL keys"]))
+        monkeypatch.setattr(slr.questionary, "confirm", self._sequence([True]))
+
+        slr._menu_manage_api_keys(st, cfg, prov, console)
+
+        remaining = parse_env_text((tmp_path / ".env").read_text(encoding="utf-8"))
+        assert "S2_API_KEY" not in remaining
+        assert "CORE_API_KEY" not in remaining
+        assert remaining.get("MAILTO") == "keep@me.com"
+        assert "S2_API_KEY" not in os.environ
+        assert "CORE_API_KEY" not in os.environ
+        events = [e for e in prov.events() if e["event"] == "manage_api_keys"]
+        assert events and events[0]["action"] == "delete_all"
+
+    def test_declining_the_delete_all_confirmation_changes_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("S2_API_KEY=a\n", encoding="utf-8")
+        monkeypatch.setenv("S2_API_KEY", "a")
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = Console(file=io.StringIO())
+        monkeypatch.setattr(slr.questionary, "select", self._sequence(["Delete ALL keys"]))
+        monkeypatch.setattr(slr.questionary, "confirm", self._sequence([False]))
+
+        slr._menu_manage_api_keys(st, cfg, prov, console)
+
+        assert parse_env_text((tmp_path / ".env").read_text(encoding="utf-8"))["S2_API_KEY"] == "a"
+        monkeypatch.delenv("S2_API_KEY", raising=False)
+
+
 class TestToolVersionStampedToProvenance:
     def test_main_interactive_logs_tool_version_for_a_new_review(self, tmp_path, monkeypatch):
         console = Console(file=io.StringIO())
-        monkeypatch.setattr(slr, "check_for_update", lambda v: None)
+        monkeypatch.setattr(slr, "latest_release_version", lambda: None)
 
         cfg = ReviewConfig(topic="t", mailto="a@b.c")
         st = RunState.create(tmp_path, "run1", cfg.to_dict())

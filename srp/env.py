@@ -21,9 +21,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_ENV_PATH = REPO_ROOT / ".env"
-
 
 def _strip_inline_comment(value: str) -> str:
     """Remove a trailing ` # comment` from an UNQUOTED value.
@@ -64,14 +61,67 @@ def parse_env_text(text: str) -> dict[str, str]:
     return out
 
 
+def _line_key(line: str) -> "str | None":
+    """The KEY a .env line defines, or None if the line is blank, a comment,
+    or has no '=' -- mirrors parse_env_text's own line-skipping rules so
+    set/unset never mistake a comment for the key it happens to mention."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[len("export "):].lstrip()
+    key, sep, _ = stripped.partition("=")
+    return key.strip() if sep and key.strip() else None
+
+
+def set_env_var(path, key: str, value: str) -> None:
+    """Add or update KEY=value in the .env at `path`, in place -- every other
+    line (comments, blanks, unrelated keys, their order) is left untouched.
+    Creates the file if it doesn't exist yet. The value is written raw (no
+    quoting), matching how .env.example itself writes plain values."""
+    env_path = Path(path)
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.is_file() else []
+    new_line = f"{key}={value}"
+    out_lines = []
+    replaced = False
+    for line in lines:
+        if not replaced and _line_key(line) == key:
+            out_lines.append(new_line)
+            replaced = True
+        else:
+            out_lines.append(line)
+    if not replaced:
+        out_lines.append(new_line)
+    env_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+
+
+def unset_env_var(path, key: str) -> bool:
+    """Remove KEY's line from the .env at `path`, if present. Returns whether
+    a line was actually removed. A missing file is a no-op, not an error."""
+    env_path = Path(path)
+    if not env_path.is_file():
+        return False
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    out_lines = [line for line in lines if _line_key(line) != key]
+    removed = len(out_lines) != len(lines)
+    if removed:
+        env_path.write_text("\n".join(out_lines) + "\n" if out_lines else "", encoding="utf-8")
+    return removed
+
+
 def load_dotenv(path=None, override: bool = False) -> list[str]:
-    """Load `path` (default: .env at the repo root) into os.environ.
+    """Load `path` (default: .env in the current working directory) into os.environ.
+
+    The default is resolved against the cwd at call time, not the location of
+    this installed module -- a pip/pipx install puts this file inside
+    site-packages, nowhere a user would ever put a .env, so the file that
+    actually matters is the one next to wherever the user ran the tool from.
 
     Returns the names of the variables actually set, so a caller can tell the
     user what was picked up. A missing or unreadable .env is not an error -- it
     is the normal case for someone passing every value as a flag.
     """
-    env_path = Path(path) if path is not None else DEFAULT_ENV_PATH
+    env_path = Path(path) if path is not None else Path.cwd() / ".env"
     if not env_path.is_file():
         return []
     try:

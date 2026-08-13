@@ -61,13 +61,14 @@ from srp.appraisal import (FIELD_PROFILES, INSTRUMENTS, PRIMARY_STUDY,
                             render_review_self_appraisal)
 from srp.config import ReviewConfig
 from srp.decisions import AI_REVIEWER, apply_decisions, pick_progressed, ta_proceeds_mask
+from srp.env import load_dotenv, parse_env_text, set_env_var, unset_env_var
 from srp.methods_report import (PhaseSearchRecord, SourceStrategyRow,
                                  render_search_methods, render_search_strategy_table)
 from srp.prisma import PhaseFrames, derive_prisma_counts_for_run, prisma_residuals
 from srp.provenance import Provenance
 from srp.quality_tier import compute_quality_tier
 from srp.state import RunState, record_key
-from srp.update_check import check_for_update, is_newer, latest_release_version
+from srp.update_check import is_newer, latest_release_version
 from srp import __version__ as _VERSION
 from srp import llm_assist
 from srp import export as srp_export
@@ -87,6 +88,16 @@ _EXCLUDE_SAMPLE_SIZE = 20
 # compatibility with runs started before the rename.
 _REQUIRED_PHASE_STAGES = ("search", "dedup", "prescreen", "review_gate")
 
+# (stage key, output file relative to the phase dir (None if the stage has no
+# file of its own), the counts key that best represents "how many records
+# came out of this stage", human label) -- the funnel _menu_diagnose_run walks.
+_PHASE_FUNNEL_STAGES = (
+    ("search", "candidates.csv", "n_hits", "Search"),
+    ("dedup", "candidates_dedup.csv", "n_out", "Dedup (unique kept)"),
+    ("prescreen", "screening.csv", "n_rows", "Screening skeleton"),
+    ("review_gate", None, "n_included", "Review gate (included after TA)"),
+)
+
 # Which config field holds the key for each keyed source, so a resumed run can
 # report which keyed sources will be silently skipped (key not rehydrated).
 _KEYED_SOURCE_FIELD = {
@@ -94,6 +105,20 @@ _KEYED_SOURCE_FIELD = {
     "springer": "springer_api_key", "core": "core_api_key",
     "wos": "wos_api_key",
 }
+
+# (human label, .env var name) for every API key the setup wizard's _ask_secret
+# prompts for -- the source list _menu_manage_api_keys offers, so both stay in
+# sync by construction rather than by remembering to update two places.
+_MANAGED_API_KEYS = (
+    ("Semantic Scholar", "S2_API_KEY"),
+    ("PubMed", "PUBMED_API_KEY"),
+    ("CORE", "CORE_API_KEY"),
+    ("IEEE Xplore", "IEEE_API_KEY"),
+    ("Scopus", "SCOPUS_API_KEY"),
+    ("Scopus institutional token", "SCOPUS_INSTTOKEN"),
+    ("Springer Nature", "SPRINGER_API_KEY"),
+    ("Web of Science", "WOS_API_KEY"),
+)
 
 _STOPWORDS = {
     "a", "an", "the", "and", "or", "of", "for", "in", "on", "to", "with", "by",
@@ -238,7 +263,7 @@ def _ask_secret(label: str, env_var: str) -> str:
     or persisted to config.json."""
     detected = os.environ.get(env_var, "")
     if detected:
-        prompt = f"{label}\n  [detected in .env -- press Enter to use it]:"
+        prompt = f"{label}\n  [detected in .env -- press Enter to use it]:\n"
     else:
         prompt = f"{label} (optional):"
     answer = (questionary.text(prompt, default="").ask() or "").strip()
@@ -316,7 +341,8 @@ def new_review_wizard(console: Console, runs_dir: Path):
         console.print(f"[dim]{msg}[/]")
 
     _h("The subject of your review, in a few words. Names the run folder, seeds the search, "
-       "and labels the AI screening prompt.   e.g.  Machine-learning intrusion detection")
+       "and labels the AI screening prompt.   e.g.  Effects of pair programming on code "
+       "quality (illustrative -- use your own topic)")
     topic = questionary.text("Review topic:").ask()
     if topic is None or not topic.strip():
         console.print("[yellow]Cancelled.[/]")
@@ -329,8 +355,9 @@ def new_review_wizard(console: Console, runs_dir: Path):
        "against each other. Cramming every synonym into one big AND chain "
        "collapses recall fast past 2-3 terms; (a OR b) AND (c OR d) is what a "
        "real search string should look like.\n"
-       "      Block 1 e.g.  intrusion detection, IDS\n"
-       "      Block 2 e.g.  machine learning, deep learning\n"
+       "      Block 1 e.g.  pair programming, collaborative programming\n"
+       "      Block 2 e.g.  code quality, defect density\n"
+       "      (illustrative -- use terms for your own topic)\n"
        "      Leave a block blank to stop adding blocks.")
     keyword_blocks: list[list[str]] = []
     block_num = 1
@@ -357,8 +384,9 @@ def new_review_wizard(console: Console, runs_dir: Path):
        "intend to screen by hand against criteria you keep elsewhere.")
     inclusion_criteria = questionary.text(
         "Inclusion criteria (a study must meet ALL):\n"
-        "      e.g.  peer-reviewed OR arXiv preprint; proposes or evaluates an ML/DL-based "
-        "IDS; reports quantitative detection results",
+        "      e.g.  peer-reviewed OR conference paper; empirically compares pair "
+        "programming against solo programming; reports a code-quality or defect metric\n"
+        "      (illustrative -- use criteria for your own topic)\n",
         default="",
     ).ask()
     if inclusion_criteria is None:
@@ -367,7 +395,7 @@ def new_review_wizard(console: Console, runs_dir: Path):
     exclusion_criteria = questionary.text(
         "Exclusion criteria (exclude if ANY applies):\n"
         "      e.g.  not in English; no empirical evaluation; survey or review paper; "
-        "signature-based only",
+        "industry blog post with no reported methodology\n",
         default="",
     ).ask()
     if exclusion_criteria is None:
@@ -472,14 +500,18 @@ def new_review_wizard(console: Console, runs_dir: Path):
                                     checked=key in profile.primary_study_instruments)
                 for key, inst in INSTRUMENTS.items() if inst.level == PRIMARY_STUDY
             ]
+            console.print(
+                "[dim]Space toggles an instrument, Enter confirms your selection.[/]")
             picked = questionary.checkbox(
-                "Choose instrument(s) instead (space to toggle):", choices=choices).ask()
+                "Choose instrument(s) instead:", choices=choices).ask()
             if picked is not None:
                 primary_instruments = picked
     else:
         console.print(f"[yellow]{profile.justification}[/]")
 
     if "mmat_screening" in primary_instruments:
+        console.print(
+            "[dim]Space toggles a design, Enter confirms your selection.[/]")
         mmat_designs = questionary.checkbox(
             "Your included studies' design(s) (MMAT needs the matching sub-checklist for "
             "each -- select all that apply):",
@@ -891,7 +923,7 @@ def run_ai_assist_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, pha
             f"Paste the contents of [bold]{prompt_path}[/] into [bold]{tool_name}[/].\n"
             f"An empty reply file is already waiting at [bold]{default_reply}[/] -- paste "
             f"the chatbot's answer into it and save (one line per study, e.g.\n"
-            f"  12 | INCLUDE | on-topic DL IDS).",
+            f"  12 | INCLUDE | on-topic pair-programming study).",
             title=f"Phase {phase}: AI-assist TA screening -- batch of {len(records)}",
             border_style="cyan",
         ))
@@ -1970,6 +2002,145 @@ def _menu_provenance(state: RunState, cfg: ReviewConfig, prov: Provenance, conso
         console.print(f"[yellow]PRISMA check:[/] {warning}")
 
 
+def _menu_diagnose_run(state: RunState, cfg: ReviewConfig, prov: Provenance, console: Console) -> None:
+    """Stage-by-stage funnel across every phase this run has touched: for a run
+    that came back empty, this is the trail state.json and provenance.jsonl
+    don't show on their own -- which stage first went to zero, and whether any
+    stage marked 'done' is missing the file it should have produced (the two
+    symptoms a 0-result, empty-folder run actually presents as)."""
+    phase_nums = sorted({
+        int(key.split(":", 1)[0]) for key in state.state.get("stages", {})
+    })
+    if not phase_nums:
+        console.print("[yellow]No stages have run in this review yet.[/]")
+        prov.log("diagnose_run", phases=[], file_mismatches=0)
+        return
+
+    file_mismatches = []
+    for phase in phase_nums:
+        pdir = state.run_dir / f"phase_{phase}"
+        table = Table(title=f"Phase {phase}")
+        table.add_column("Stage")
+        table.add_column("Status")
+        table.add_column("Count")
+        table.add_column("Output file")
+
+        zero_flagged = False
+        for stage_key, filename, count_key, label in _PHASE_FUNNEL_STAGES:
+            status = state.stage_status(phase, stage_key)
+            entry = state.state.get("stages", {}).get(f"{phase}:{stage_key}", {})
+            count = entry.get("counts", {}).get(count_key)
+
+            if filename is None:
+                file_disp = "-"
+            else:
+                file_path = pdir / filename
+                file_disp = filename if file_path.exists() else f"[red]{filename} MISSING[/]"
+                if status == "done" and not file_path.exists():
+                    file_mismatches.append((phase, label, file_path))
+
+            status_disp = status if status else "[dim]not run[/]"
+            if count is None:
+                count_disp = "-"
+            elif count == 0 and not zero_flagged:
+                count_disp = f"[red]{count} <- first zero-drop stage[/]"
+                zero_flagged = True
+            else:
+                count_disp = str(count)
+            table.add_row(label, status_disp, count_disp, file_disp)
+
+        console.print(table)
+
+    if file_mismatches:
+        console.print(Panel(
+            "\n".join(f"Phase {p}: '{label}' is marked done, but {path} "
+                      f"does not exist on disk." for p, label, path in file_mismatches),
+            title="[red]Stage says done, but its output file is missing[/]",
+            border_style="red",
+        ))
+
+    prov.log("diagnose_run", phases=phase_nums, file_mismatches=len(file_mismatches))
+
+
+def _menu_manage_api_keys(state: RunState, cfg: ReviewConfig, prov: Provenance, console: Console) -> None:
+    """Add/update or delete .env-managed API keys, and show the .env path in
+    use -- after a pipx install, that path isn't the repo you can see on
+    GitHub, it's wherever you happened to run `slr` from (see srp.env.load_dotenv),
+    and there was previously no way to discover or manage it short of finding
+    the file by hand. Never prints a key's actual value, matching _ask_secret's
+    own never-echo convention."""
+    env_path = Path.cwd() / ".env"
+    console.print(f"[dim]Using .env at:[/] {env_path}")
+    file_values = parse_env_text(env_path.read_text(encoding="utf-8")) if env_path.is_file() else {}
+
+    table = Table(title="API keys")
+    table.add_column("Source")
+    table.add_column("Env var")
+    table.add_column("Status")
+    for label, var in _MANAGED_API_KEYS:
+        present = bool(file_values.get(var, "").strip())
+        table.add_row(label, var, "[green]set[/]" if present else "[dim]not set[/]")
+    console.print(table)
+
+    console.print("[dim]Arrow keys choose an action, Enter confirms.[/]")
+    action = questionary.select(
+        "What would you like to do?",
+        choices=["Add or update a key", "Delete a key", "Delete ALL keys", "Back"],
+    ).ask()
+    if action is None or action == "Back":
+        prov.log("manage_api_keys", action="none")
+        return
+
+    if action == "Add or update a key":
+        console.print("[dim]Arrow keys choose a source, Enter confirms.[/]")
+        var = questionary.select(
+            "Which key?",
+            choices=[questionary.Choice(f"{label} ({v})", value=v) for label, v in _MANAGED_API_KEYS],
+        ).ask()
+        if var is None:
+            return
+        value = (questionary.text(f"New value for {var}:", default="").ask() or "").strip()
+        if not value:
+            console.print("[yellow]No value entered -- nothing changed.[/]")
+            return
+        set_env_var(env_path, var, value)
+        os.environ[var] = value
+        console.print(f"[green]Saved[/] {var} to {env_path}")
+        prov.log("manage_api_keys", action="set", key=var)
+
+    elif action == "Delete a key":
+        present = [(label, var) for label, var in _MANAGED_API_KEYS if file_values.get(var, "").strip()]
+        if not present:
+            console.print("[yellow]No keys are currently set in .env.[/]")
+            return
+        console.print("[dim]Arrow keys choose a source, Enter confirms.[/]")
+        var = questionary.select(
+            "Delete which key?",
+            choices=[questionary.Choice(f"{label} ({v})", value=v) for label, v in present],
+        ).ask()
+        if var is None:
+            return
+        confirmed = questionary.confirm(f"Delete {var} from {env_path}?", default=False).ask()
+        if not confirmed:
+            return
+        unset_env_var(env_path, var)
+        os.environ.pop(var, None)
+        console.print(f"[green]Deleted[/] {var} from {env_path}")
+        prov.log("manage_api_keys", action="delete", key=var)
+
+    elif action == "Delete ALL keys":
+        confirmed = questionary.confirm(
+            f"Delete ALL {len(_MANAGED_API_KEYS)} API key(s) from {env_path}? "
+            f"This cannot be undone.", default=False).ask()
+        if not confirmed:
+            return
+        for _, var in _MANAGED_API_KEYS:
+            unset_env_var(env_path, var)
+            os.environ.pop(var, None)
+        console.print(f"[green]Deleted all API keys from[/] {env_path}")
+        prov.log("manage_api_keys", action="delete_all")
+
+
 # --- core logic ---
 def _load_search_strategy_rows(state: RunState, cfg: ReviewConfig) -> list:
     """Read every phase's search_strategy.csv (written by search.py, see
@@ -2080,6 +2251,63 @@ def _print_closing_panel(state: RunState, console: Console) -> None:
     console.print(Panel("\n".join(lines), title="Review outputs", border_style="green"))
 
 
+# One-line description per consolidation-menu action, keyed by that action's
+# exact label -- shown once as a legend before the menu loop starts. Where a
+# 0/empty result is a normal, non-broken outcome (e.g. most sets are
+# closed-access, so 0 downloads is common), that gets said explicitly, so a
+# quiet zero isn't mistaken for a failure.
+_CONSOLIDATION_ACTION_HELP = {
+    "Merge TA-included studies across phases":
+        "Combines every phase's title/abstract-included records into one set for full-text "
+        "screening. 0 merged usually means no phase has passed its review gate yet.",
+    "Citation snowballing (backward + forward, Wohlin 2014)":
+        "Follows references and citations of the current included set to find more candidates "
+        "-- PRISMA-style snowballing, not query expansion.",
+    "Merge citation-snowball results into included set":
+        "Folds screened snowball candidates into the main included set. Run snowballing and "
+        "screen its output first.",
+    "Download PDFs for the final set":
+        "Resolves and downloads open-access PDFs via Unpaywall/direct links. 0 downloaded "
+        "usually means the set is mostly closed-access, not a failure -- see "
+        "manual_download_needed.csv.",
+    "Full-text screening (record eligibility decisions)":
+        "Records include/exclude decisions on the full text of every TA-included study.",
+    "Verify citations (DOIs)":
+        "Cross-checks claimed titles against what each DOI actually resolves to on Crossref, "
+        "to catch fabricated or mismatched references.",
+    "Build extraction sheet (for human quality coding)":
+        "Creates the blank per-study coding template (thematic class, R/A/T/C, quality tier) "
+        "for full-text-included studies.",
+    "Review/correct an extraction record (venue tier, R/A/T/C, quality tier, ...)":
+        "Edit one study's extraction fields by id, after the sheet already exists.",
+    "Generate PRISMA + tier figures":
+        "Renders the PRISMA flow diagram plus quality-/venue-tier charts from the current "
+        "screening and extraction data.",
+    "Export references (BibTeX + RIS)":
+        "Writes citation files for the final included set, for a reference manager.",
+    "Export full-text exclusions with reasons (PRISMA 16b)":
+        "Writes the PRISMA-required table of full-text-excluded studies and why.",
+    "Inter-rater agreement (Cohen's kappa)":
+        "Computes agreement between two reviewers' decisions on the same records.",
+    "Draft methods paragraph (search counts, ready to quote)":
+        "Auto-drafts a methods paragraph and per-source search-strategy table from this run's "
+        "actual counts.",
+    "Write review self-appraisal checklist (AMSTAR 2/ROBIS/DARE/MECCIR)":
+        "Writes a self-appraisal checklist for the review itself, matched to your configured "
+        "field.",
+    "Write provenance report":
+        "Writes PROVENANCE.md: every stage's counts and the PRISMA numbers derived from them.",
+    "Diagnose this run (why did a stage return 0 / where did files go)":
+        "Per-phase funnel of stage counts; flags the first stage that returned zero and any "
+        "stage marked done whose output file is missing. Start here if a run came back empty.",
+    "Manage API keys (.env location, add/update/delete)":
+        "Shows the .env path in use and lets you add, update, or delete API keys stored there.",
+    "Check for updates":
+        "Checks GitHub for a newer release and reports the result -- up to date, outdated, or "
+        "unreachable.",
+}
+
+
 def consolidation_menu(state: RunState, cfg: ReviewConfig, prov: Provenance, console: Console) -> None:
     # Ordered as the method runs: merge the TA-includes, get their full texts, screen
     # them at full text, and only then extract / count / export. Full-text screening
@@ -2109,10 +2337,21 @@ def consolidation_menu(state: RunState, cfg: ReviewConfig, prov: Provenance, con
         "Write review self-appraisal checklist (AMSTAR 2/ROBIS/DARE/MECCIR)":
             lambda: _menu_review_self_appraisal(state, cfg, prov, console),
         "Write provenance report": lambda: _menu_provenance(state, cfg, prov, console),
+        "Diagnose this run (why did a stage return 0 / where did files go)":
+            lambda: _menu_diagnose_run(state, cfg, prov, console),
+        "Manage API keys (.env location, add/update/delete)":
+            lambda: _menu_manage_api_keys(state, cfg, prov, console),
         "Check for updates": lambda: _menu_check_for_updates(state, cfg, prov, console),
     }
 
     console.rule("[bold]Consolidation[/]")
+    legend = Table(title="What each action does")
+    legend.add_column("Action")
+    legend.add_column("What it does")
+    for label in actions:
+        legend.add_row(label, _CONSOLIDATION_ACTION_HELP.get(label, "[no description]"))
+    console.print(legend)
+
     while True:
         choice = questionary.select("What would you like to do?", choices=list(actions) + ["Finish"]).ask()
         if choice is None or choice == "Finish":
@@ -2122,17 +2361,39 @@ def consolidation_menu(state: RunState, cfg: ReviewConfig, prov: Provenance, con
     _print_closing_panel(state, console)
 
 
+def _update_status(version: str) -> "tuple[str, str | None]":
+    """Shared classification behind both the startup line and the on-demand
+    menu action: one of 'dev_build', 'check_failed', 'up_to_date', 'outdated',
+    plus the latest release tag when known. A source/dev checkout is never
+    flagged outdated -- it can be ahead of the last tag, not behind it -- and
+    a failed check is never conflated with 'up to date'."""
+    if version.startswith("0.0.0-dev"):
+        return "dev_build", None
+    latest = latest_release_version()
+    if latest is None:
+        return "check_failed", None
+    if is_newer(latest, version):
+        return "outdated", latest
+    return "up_to_date", latest
+
+
 def _maybe_print_update_notice(console: Console) -> None:
-    """Non-blocking startup nag: silent unless a real newer release exists --
-    never claims outdated on a check failure or a source/dev checkout (see
-    srp.update_check.check_for_update)."""
-    latest = check_for_update(_VERSION)
-    if latest:
+    """Non-blocking startup line: always shows the running version, so
+    silence is never mistaken for 'the check didn't run'. A dim confirmation
+    when up to date, a yellow nag only when a real newer release exists."""
+    outcome, latest = _update_status(_VERSION)
+    if outcome == "dev_build":
+        console.print(f"[dim]v{_VERSION} (source checkout)[/]")
+    elif outcome == "check_failed":
+        console.print(f"[dim]v{_VERSION}[/]")
+    elif outcome == "outdated":
         console.print(
             f"[yellow]A newer version is available: {latest} (you're on {_VERSION}).[/] "
             f"Run 'pipx upgrade systematic-review-pipeline' to update, or see "
             f"{_CHANGELOG_URL}"
         )
+    else:
+        console.print(f"[dim]v{_VERSION} -- up to date[/]")
 
 
 # --- core logic ---
@@ -2141,33 +2402,26 @@ def _menu_check_for_updates(state: RunState, cfg: ReviewConfig, prov: Provenance
     """On-demand version of _maybe_print_update_notice that always reports a
     result -- up to date, outdated, or check-failed -- instead of staying
     silent, and logs the outcome to provenance."""
-    if _VERSION.startswith("0.0.0-dev"):
+    outcome, latest = _update_status(_VERSION)
+    if outcome == "dev_build":
         console.print(
             "[dim]Running from source (not a packaged install) -- version comparison "
             f"isn't meaningful; a checkout can be ahead of the last tagged release. "
             f"See the latest release directly: {_RELEASES_URL}[/]"
         )
-        prov.log("update_check", current=_VERSION, latest=None, outcome="dev_build")
-        return
-
-    latest = latest_release_version()
-    if latest is None:
+    elif outcome == "check_failed":
         console.print(
             "[yellow]Could not check for updates[/] (no network, or GitHub is "
             "unreachable right now)."
         )
-        prov.log("update_check", current=_VERSION, latest=None, outcome="check_failed")
-        return
-
-    if is_newer(latest, _VERSION):
+    elif outcome == "outdated":
         console.print(
             f"[yellow]A newer version is available: {latest} (you're on {_VERSION}).[/] "
             f"Run 'pipx upgrade systematic-review-pipeline' to update."
         )
-        prov.log("update_check", current=_VERSION, latest=latest, outcome="outdated")
     else:
         console.print(f"[green]Up to date[/] (v{_VERSION}).")
-        prov.log("update_check", current=_VERSION, latest=latest, outcome="up_to_date")
+    prov.log("update_check", current=_VERSION, latest=latest, outcome=outcome)
 
 
 # ---------------------------------------------------------------------------
@@ -2175,7 +2429,8 @@ def _menu_check_for_updates(state: RunState, cfg: ReviewConfig, prov: Provenance
 # ---------------------------------------------------------------------------
 def main_interactive(runs_dir: Path, console: Console, preselect_run: str | None = None) -> None:
     console.print(Panel.fit(
-        "[bold]Systematic Review Pipeline[/]\n[dim]guided mode[/]", border_style="cyan",
+        f"[bold]Systematic Review Pipeline[/] [dim]v{_VERSION}[/]\n[dim]guided mode[/]",
+        border_style="cyan",
     ))
     _maybe_print_update_notice(console)
 
@@ -2246,6 +2501,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    # Must precede everything else: _ask_secret() and hydrate_secrets_from_env()
+    # read os.environ directly, so a .env picked up later would have no effect
+    # on keys already prompted for or hydrated by then.
+    load_dotenv()
+
     ap = build_arg_parser()
     args = ap.parse_args()
 
