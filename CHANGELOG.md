@@ -6,6 +6,30 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-08-13
+
+### Fixed
+
+- **Critical, pip/pipx installs specifically**: every stage script
+  (search.py, dedup.py, screen.py, download.py, and others) was launched
+  with its working directory forced to wherever `slr.py` itself is
+  installed, rather than the directory the user actually ran `slr` from.
+  For a pip/pipx install that's deep inside site-packages, nowhere near the
+  run folder -- so every `--out`/`--in` path (all relative, e.g.
+  `runs/<id>/phase_1/candidates.csv`) resolved against the wrong directory:
+  the script's real output silently landed inside the installed package
+  instead of the run folder, while `state.json`/`config.json` (written
+  in-process, not via a subprocess) correctly landed in the real run
+  folder. The tool's own post-search re-read of `candidates.csv` (used to
+  compute the hit count recorded in `state.json`) then ALSO looked in the
+  wrong place and found nothing -- recording a false zero-hit result even
+  when the search itself had actually succeeded. This is almost certainly
+  the real explanation for early reports of a run coming back with 0 hits
+  and an empty phase folder despite `state.json` claiming success -- not a
+  network issue. Unaffected for a git-clone checkout run as `python
+  slr.py` from the repo root, since the install directory and the run
+  directory happened to coincide there.
+
 ## [1.2.2] - 2026-08-13
 
 ### Fixed

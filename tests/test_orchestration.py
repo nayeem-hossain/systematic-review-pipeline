@@ -9,6 +9,7 @@ something is *refused* or *reported* rather than defaulted.
 """
 import io
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +22,36 @@ from srp.config import ReviewConfig
 from srp.env import parse_env_text
 from srp.provenance import Provenance
 from srp.state import RunState
+
+
+class TestRunSubprocessCwd:
+    """run_subprocess used to force cwd=_SCRIPT_DIR (wherever slr.py itself
+    is installed) on every child process it launches -- for a pipx install
+    that's deep inside site-packages, nowhere near the user's actual runs/
+    folder. Every --out/--in path a stage script receives is relative, so
+    the child resolved them against the WRONG directory: search.py/dedup.py/
+    screen.py wrote real output inside the installed package instead of the
+    run folder, while state.json/config.json (written in-process, never via
+    a subprocess) correctly used the real cwd. The parent's own post-hoc
+    re-read of candidates.csv (used to compute n_hits for state.json) then
+    ALSO looked in the wrong place and found nothing -- recording a false
+    zero even when the search itself had actually succeeded. This is almost
+    certainly what earlier 'phase folder is empty but state.json says done'
+    reports actually were, not a network issue."""
+
+    def test_child_process_is_not_pinned_to_the_install_directory(self, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, capture_output=True, text=True, cwd=None, env=None):
+            captured["cwd"] = cwd
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(slr.subprocess, "run", fake_run)
+        console = Console(file=io.StringIO())
+
+        slr.run_subprocess(["python", "-c", "pass"], console, "test")
+
+        assert captured["cwd"] is None
 
 
 class TestReadCsvSafe:

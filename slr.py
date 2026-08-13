@@ -302,8 +302,14 @@ def run_subprocess(cmd: list, console: Console, description: str, success_codes=
         result = None
         try:
             with console.status(f"[cyan]{description}...[/]", spinner="dots"):
-                result = subprocess.run(cmd, capture_output=True, text=True,
-                                         cwd=str(_SCRIPT_DIR), env=env)
+                # No cwd= override: every --out/--in path built elsewhere in
+                # slr.py is relative to the CALLER's cwd (state.json,
+                # config.json, and everything else are written the same
+                # way), so the child must resolve them the same way too --
+                # pinning it to wherever slr.py itself is installed (as this
+                # used to) sends a pip/pipx install's actual output into
+                # site-packages, nowhere the run folder's own state can see it.
+                result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         except OSError as e:
             console.print(Panel(str(e), title=f"[red]FAILED to launch:[/] {description}",
                                  border_style="red"))
