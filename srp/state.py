@@ -115,6 +115,15 @@ class RunState:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def save_config(self, config: dict) -> None:
+        """Persist an updated config.json -- config.json is otherwise written
+        once at create() and never touched again, so anything that lets a
+        user edit run settings after the fact (e.g. re-running a phase's
+        search with corrected settings) needs this to make the edit durable
+        across a resume, not just live in memory for the current process."""
+        self.config = config
+        _write_json_atomic(self.run_dir / "config.json", config)
+
     def mark_stage(self, phase: int, stage: str, status: str = "done", counts: dict | None = None) -> None:
         key = f"{phase}:{stage}"
         self.state.setdefault("stages", {})[key] = {

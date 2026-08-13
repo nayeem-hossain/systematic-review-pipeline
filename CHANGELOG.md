@@ -6,6 +6,24 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-13
+
+### Added
+
+- "Re-run a phase's search (with or without changes)" consolidation-menu
+  action -- the fix half of "Diagnose this run": re-runs search + dedup +
+  prescreen for one phase, either with the current settings or after
+  editing mailto/year range/max-per-source/sources first, without
+  abandoning the run and starting over. Warns and requires confirmation
+  before running, since it overwrites that phase's candidates/dedup/
+  screening files and clears any now-stale downstream screening decisions.
+
+### Fixed
+
+- Every table this tool renders (the consolidation-menu legend, the
+  diagnose-run funnel, the API-key list) drew no line between rows, making
+  adjacent rows hard to tell apart at a glance -- added row separators.
+
 ## [1.1.0] - 2026-08-13
 
 ### Fixed

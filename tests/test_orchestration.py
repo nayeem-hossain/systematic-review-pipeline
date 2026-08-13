@@ -115,6 +115,7 @@ class TestProvenanceCoverage:
         "_menu_export_refs", "_menu_export_exclusions", "_menu_kappa",
         "_menu_review_self_appraisal", "_menu_review_extraction",
         "_menu_check_for_updates", "_menu_diagnose_run", "_menu_manage_api_keys",
+        "_menu_rerun_search",
     ])
     def test_action_takes_provenance_and_logs(self, func):
         import inspect
@@ -1003,6 +1004,162 @@ class TestMenuCheckForUpdates:
         assert events and events[0]["outcome"] == "dev_build"
 
 
+class TestRerunSearch:
+    """The diagnose-run action can tell a user a phase's search came back
+    empty -- this is how they actually fix it: re-run that phase's search
+    (and its downstream dedup/prescreen, which would otherwise go stale
+    against a fresh candidates.csv) either as-is, or after correcting the
+    settings that likely caused it (a typo'd mailto, wrong year range, no
+    sources selected), without abandoning the run."""
+
+    def _fake(self, answer):
+        return type("F", (), {"ask": lambda self: answer})()
+
+    def _sequence(self, answers):
+        it = iter(answers)
+        return lambda *a, **kw: self._fake(next(it))
+
+    def _cfg(self):
+        return ReviewConfig(topic="t", mailto="a@b.c", keyword_blocks=[["x"]])
+
+    def _state_and_prov(self, tmp_path, cfg):
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+        prov = Provenance(st.run_dir / "provenance.jsonl")
+        return st, prov
+
+    def _console(self):
+        return Console(file=io.StringIO(), width=200)
+
+    def _fake_run_subprocess(self, monkeypatch, n_hits=3, n_dupes=0):
+        """Every stage's subprocess call succeeds and writes a plausible
+        output CSV, so downstream _read_csv_safe() counts come out
+        deterministic instead of depending on a real search/dedup/screen run."""
+        def fake(cmd, console, description, success_codes=(0,), secret_env=None):
+            script = Path(cmd[1]).name
+            out_path = Path(cmd[cmd.index("--out") + 1])
+            if script == "search.py":
+                rows = "\n".join(f"{i},Title {i}" for i in range(n_hits))
+                out_path.write_text(f"id,title\n{rows}\n", encoding="utf-8")
+            elif script == "dedup.py":
+                lines = ["id,title,duplicate_of"]
+                for i in range(n_hits):
+                    dup = "1" if i < n_dupes else ""
+                    lines.append(f"{i},Title {i},{dup}")
+                out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            elif script == "screen.py":
+                n_rows = n_hits - n_dupes
+                lines = ["id,title,ta_decision"] + [f"{i},Title {i}," for i in range(n_rows)]
+                out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return True
+
+        monkeypatch.setattr(slr, "run_subprocess", fake)
+
+    def test_no_search_has_ever_run_reports_guidance(self, tmp_path):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        console = self._console()
+
+        slr._menu_rerun_search(st, cfg, prov, console)
+
+        assert "no phase" in console.file.getvalue().lower()
+
+    def test_declining_the_confirm_changes_nothing(self, tmp_path, monkeypatch):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        st.phase_dir(1)
+        st.mark_stage(1, "search", counts={"n_hits": 0})
+        console = self._console()
+        monkeypatch.setattr(slr.questionary, "select", self._sequence([1]))
+        monkeypatch.setattr(slr.questionary, "confirm", self._sequence([False]))
+        called = []
+        monkeypatch.setattr(slr, "run_subprocess", lambda *a, **kw: called.append(True))
+
+        slr._menu_rerun_search(st, cfg, prov, console)
+
+        assert called == []
+        events = [e for e in prov.events() if e["event"] == "rerun_search"]
+        assert events and events[0]["confirmed"] is False
+
+    def test_rerun_with_no_changes_reruns_search_dedup_prescreen(self, tmp_path, monkeypatch):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        st.phase_dir(1)
+        st.mark_stage(1, "search", counts={"n_hits": 0})
+        console = self._console()
+        self._fake_run_subprocess(monkeypatch, n_hits=5, n_dupes=1)
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence([1, "Re-run with current settings (no changes)"]))
+        monkeypatch.setattr(slr.questionary, "confirm", self._sequence([True]))
+
+        slr._menu_rerun_search(st, cfg, prov, console)
+
+        st2 = RunState.load(st.run_dir)
+        assert st2.stage_status(1, "search") == "done"
+        assert st2.state["stages"]["1:search"]["counts"]["n_hits"] == 5
+        assert st2.stage_status(1, "dedup") == "done"
+        assert st2.stage_status(1, "prescreen") == "done"
+        events = [e for e in prov.events() if e["event"] == "rerun_search"]
+        assert events and events[0]["outcome"] == "done"
+
+    def test_existing_screening_decisions_trigger_a_loss_warning(self, tmp_path, monkeypatch):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        pdir = st.phase_dir(1)
+        st.mark_stage(1, "search", counts={"n_hits": 3})
+        pd.DataFrame({"id": [1, 2], "title": ["A", "B"], "ta_decision": ["include", ""]}
+                     ).to_csv(pdir / "screening.csv", index=False)
+        console = self._console()
+        monkeypatch.setattr(slr.questionary, "select", self._sequence([1]))
+        monkeypatch.setattr(slr.questionary, "confirm", self._sequence([False]))
+
+        slr._menu_rerun_search(st, cfg, prov, console)
+
+        assert "lost" in console.file.getvalue().lower()
+
+    def test_edit_settings_then_rerun_persists_the_change(self, tmp_path, monkeypatch):
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        st.phase_dir(1)
+        st.mark_stage(1, "search", counts={"n_hits": 0})
+        console = self._console()
+        self._fake_run_subprocess(monkeypatch, n_hits=2, n_dupes=0)
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence([1, "Edit settings, then re-run"]))
+        monkeypatch.setattr(slr.questionary, "confirm", self._sequence([True]))
+        monkeypatch.setattr(slr.questionary, "checkbox", self._sequence([["mailto"]]))
+        monkeypatch.setattr(slr.questionary, "text", self._sequence(["fixed@b.c"]))
+
+        slr._menu_rerun_search(st, cfg, prov, console)
+
+        assert cfg.mailto == "fixed@b.c"
+        st2 = RunState.load(st.run_dir)
+        assert st2.config["mailto"] == "fixed@b.c"
+        events = [e for e in prov.events() if e["event"] == "rerun_search"]
+        assert events and events[0]["changed_fields"] == ["mailto"]
+
+    def test_stale_downstream_decisions_are_cleared_after_rerun(self, tmp_path, monkeypatch):
+        """assist_ta/review_gate were marked done against the OLD candidates
+        -- after search is redone those counts describe a set of records
+        that no longer exists, so they must stop reporting as 'done'."""
+        cfg = self._cfg()
+        st, prov = self._state_and_prov(tmp_path, cfg)
+        st.phase_dir(1)
+        st.mark_stage(1, "search", counts={"n_hits": 3})
+        st.mark_stage(1, "assist_ta", counts={})
+        st.mark_stage(1, "review_gate", counts={"n_included": 2, "n_overridden": 0})
+        console = self._console()
+        self._fake_run_subprocess(monkeypatch, n_hits=1, n_dupes=0)
+        monkeypatch.setattr(slr.questionary, "select",
+                             self._sequence([1, "Re-run with current settings (no changes)"]))
+        monkeypatch.setattr(slr.questionary, "confirm", self._sequence([True]))
+
+        slr._menu_rerun_search(st, cfg, prov, console)
+
+        st2 = RunState.load(st.run_dir)
+        assert st2.stage_status(1, "assist_ta") is None
+        assert st2.stage_status(1, "review_gate") is None
+
+
 class TestDiagnoseRun:
     """The user's real report: a test run returned 0 hits from every source,
     and phase_1/phase_2 folders ended up empty, with no trail explaining
@@ -1086,6 +1243,23 @@ class TestDiagnoseRun:
         assert events
 
 
+class TestRunStateSaveConfig:
+    """config.json was previously written once at create() and never again --
+    _menu_rerun_search's 'edit settings' path needs a way to persist a
+    change so it survives a resume, not just live in the in-memory cfg for
+    the rest of this process."""
+
+    def test_save_config_updates_the_file_on_disk(self, tmp_path):
+        cfg = ReviewConfig(topic="t", mailto="old@b.c")
+        st = RunState.create(tmp_path, "run1", cfg.to_dict())
+
+        cfg.mailto = "new@b.c"
+        st.save_config(cfg.to_dict())
+
+        reloaded = RunState.load(st.run_dir)
+        assert reloaded.config["mailto"] == "new@b.c"
+
+
 class TestConsolidationMenuLegend:
     """The consolidation menu used to be 18 bare labels with no indication of
     what each one does or produces -- this legend prints a one-line
@@ -1105,6 +1279,7 @@ class TestConsolidationMenuLegend:
         text = console.file.getvalue()
         assert "[no description]" not in text
         assert "Diagnose this run" in text
+        assert "Re-run a phase's search" in text
         assert "Manage API keys" in text
 
 

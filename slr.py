@@ -120,6 +120,14 @@ _MANAGED_API_KEYS = (
     ("Web of Science", "WOS_API_KEY"),
 )
 
+# Every source name search.py understands -- the canonical order the setup
+# wizard's own sources checkbox uses, reused so _edit_search_settings offers
+# the identical list rather than a second copy that could drift.
+_ALL_SOURCE_NAMES = (
+    "openalex", "semanticscholar", "crossref", "arxiv", "pubmed", "doaj",
+    "ieee", "scopus", "springer", "core", "wos",
+)
+
 _STOPWORDS = {
     "a", "an", "the", "and", "or", "of", "for", "in", "on", "to", "with", "by",
     "from", "at", "as", "is", "are", "was", "were", "be", "been", "being",
@@ -717,6 +725,78 @@ def new_review_wizard(console: Console, runs_dir: Path):
 # C. phase loop
 # ---------------------------------------------------------------------------
 # --- core logic ---
+def _run_search_dedup_prescreen(state: RunState, cfg: ReviewConfig, prov: Provenance,
+                                 console: Console, phase: int, pdir: Path, query: str) -> None:
+    """Runs search.py -> dedup.py -> screen.py for one phase, marking each
+    stage's counts on success. Shared by run_phase_loop's normal forward pass
+    and _menu_rerun_search's redo, so the exact same three subprocess calls
+    run either way -- a fix to one path can't silently drift from the other."""
+    # 1. SEARCH
+    if _should_run_stage(state, phase, "search", "Search"):
+        candidates_path = pdir / "candidates.csv"
+        strategy_path = pdir / "search_strategy.csv"
+        cmd = [
+            sys.executable, _script_path("search.py"),
+            "--query", query,
+            "--year-from", str(cfg.year_from),
+            "--year-to", str(cfg.year_to),
+            "--mailto", cfg.mailto,
+            "--max-per-source", str(cfg.max_per_source),
+            "--sources", ",".join(cfg.sources),
+            "--out", str(candidates_path),
+            "--strategy-log", str(strategy_path),
+        ]
+        if cfg.scopus_insttoken:
+            cmd += ["--scopus-insttoken", cfg.scopus_insttoken]
+        if run_subprocess(cmd, console, f"Phase {phase}: searching sources",
+                           secret_env=cfg.secret_env()):
+            n_hits = len(_read_csv_safe(candidates_path))
+            state.mark_stage(phase, "search", counts={"n_hits": n_hits})
+            prov.log("search_run", phase=phase, query=query, sources=cfg.sources, n_hits=n_hits)
+
+            strategy_df = _read_csv_safe(strategy_path)
+            if not strategy_df.empty and "truncated" in strategy_df.columns:
+                truncated = strategy_df.loc[
+                    strategy_df["truncated"].astype(str).str.lower().eq("true"), "source"
+                ].tolist()
+                if truncated:
+                    console.print(
+                        f"[yellow]Truncated by --max-per-source ({cfg.max_per_source}):[/] "
+                        f"{', '.join(truncated)}. Those sources returned only the "
+                        f"top-ranked slice, so this phase's hit count is a sample "
+                        f"rather than a complete search. See {strategy_path.name}.")
+
+    # 2. DEDUP
+    if _should_run_stage(state, phase, "dedup", "Dedup"):
+        candidates_path = pdir / "candidates.csv"
+        dedup_path = pdir / "candidates_dedup.csv"
+        cmd = [
+            sys.executable, _script_path("dedup.py"),
+            "--in", str(candidates_path), "--out", str(dedup_path),
+            "--title-threshold", str(cfg.title_threshold),
+        ]
+        if run_subprocess(cmd, console, f"Phase {phase}: de-duplicating"):
+            n_in = len(_read_csv_safe(candidates_path))
+            dedup_df = _read_csv_safe(dedup_path)
+            n_dupes = int(dedup_df["duplicate_of"].notna().sum()) if "duplicate_of" in dedup_df.columns else 0
+            n_out = len(dedup_df) - n_dupes
+            state.mark_stage(phase, "dedup", counts={"n_in": n_in, "n_out": n_out, "n_dupes": n_dupes})
+            prov.log("dedup_run", phase=phase, n_in=n_in, n_out=n_out, n_dupes=n_dupes)
+
+    # 3. PRESCREEN skeleton
+    if _should_run_stage(state, phase, "prescreen", "Prescreen skeleton"):
+        dedup_path = pdir / "candidates_dedup.csv"
+        screening_path = pdir / "screening.csv"
+        cmd = [
+            sys.executable, _script_path("screen.py"),
+            "--in", str(dedup_path), "--out", str(screening_path),
+        ]
+        if run_subprocess(cmd, console, f"Phase {phase}: building screening skeleton"):
+            n_rows = len(_read_csv_safe(screening_path))
+            state.mark_stage(phase, "prescreen", counts={"n_rows": n_rows})
+            prov.log("prescreen_run", phase=phase, n_rows=n_rows)
+
+
 def run_phase_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, console: Console) -> None:
     n_phases = cfg.n_phases
     phase = state.state.get("current_phase", 1)
@@ -732,70 +812,7 @@ def run_phase_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, console
             state.state[query_key] = query
             state.save()
 
-        # 1. SEARCH
-        if _should_run_stage(state, phase, "search", "Search"):
-            candidates_path = pdir / "candidates.csv"
-            strategy_path = pdir / "search_strategy.csv"
-            cmd = [
-                sys.executable, _script_path("search.py"),
-                "--query", query,
-                "--year-from", str(cfg.year_from),
-                "--year-to", str(cfg.year_to),
-                "--mailto", cfg.mailto,
-                "--max-per-source", str(cfg.max_per_source),
-                "--sources", ",".join(cfg.sources),
-                "--out", str(candidates_path),
-                "--strategy-log", str(strategy_path),
-            ]
-            if cfg.scopus_insttoken:
-                cmd += ["--scopus-insttoken", cfg.scopus_insttoken]
-            if run_subprocess(cmd, console, f"Phase {phase}: searching sources",
-                               secret_env=cfg.secret_env()):
-                n_hits = len(_read_csv_safe(candidates_path))
-                state.mark_stage(phase, "search", counts={"n_hits": n_hits})
-                prov.log("search_run", phase=phase, query=query, sources=cfg.sources, n_hits=n_hits)
-
-                strategy_df = _read_csv_safe(strategy_path)
-                if not strategy_df.empty and "truncated" in strategy_df.columns:
-                    truncated = strategy_df.loc[
-                        strategy_df["truncated"].astype(str).str.lower().eq("true"), "source"
-                    ].tolist()
-                    if truncated:
-                        console.print(
-                            f"[yellow]Truncated by --max-per-source ({cfg.max_per_source}):[/] "
-                            f"{', '.join(truncated)}. Those sources returned only the "
-                            f"top-ranked slice, so this phase's hit count is a sample "
-                            f"rather than a complete search. See {strategy_path.name}.")
-
-        # 2. DEDUP
-        if _should_run_stage(state, phase, "dedup", "Dedup"):
-            candidates_path = pdir / "candidates.csv"
-            dedup_path = pdir / "candidates_dedup.csv"
-            cmd = [
-                sys.executable, _script_path("dedup.py"),
-                "--in", str(candidates_path), "--out", str(dedup_path),
-                "--title-threshold", str(cfg.title_threshold),
-            ]
-            if run_subprocess(cmd, console, f"Phase {phase}: de-duplicating"):
-                n_in = len(_read_csv_safe(candidates_path))
-                dedup_df = _read_csv_safe(dedup_path)
-                n_dupes = int(dedup_df["duplicate_of"].notna().sum()) if "duplicate_of" in dedup_df.columns else 0
-                n_out = len(dedup_df) - n_dupes
-                state.mark_stage(phase, "dedup", counts={"n_in": n_in, "n_out": n_out, "n_dupes": n_dupes})
-                prov.log("dedup_run", phase=phase, n_in=n_in, n_out=n_out, n_dupes=n_dupes)
-
-        # 3. PRESCREEN skeleton
-        if _should_run_stage(state, phase, "prescreen", "Prescreen skeleton"):
-            dedup_path = pdir / "candidates_dedup.csv"
-            screening_path = pdir / "screening.csv"
-            cmd = [
-                sys.executable, _script_path("screen.py"),
-                "--in", str(dedup_path), "--out", str(screening_path),
-            ]
-            if run_subprocess(cmd, console, f"Phase {phase}: building screening skeleton"):
-                n_rows = len(_read_csv_safe(screening_path))
-                state.mark_stage(phase, "prescreen", counts={"n_rows": n_rows})
-                prov.log("prescreen_run", phase=phase, n_rows=n_rows)
+        _run_search_dedup_prescreen(state, cfg, prov, console, phase, pdir, query)
 
         # 4. AI-ASSIST TA (manual paste loop)
         if _should_run_stage(state, phase, "assist_ta", "AI-assist TA screening"):
@@ -2019,7 +2036,7 @@ def _menu_diagnose_run(state: RunState, cfg: ReviewConfig, prov: Provenance, con
     file_mismatches = []
     for phase in phase_nums:
         pdir = state.run_dir / f"phase_{phase}"
-        table = Table(title=f"Phase {phase}")
+        table = Table(title=f"Phase {phase}", show_lines=True)
         table.add_column("Stage")
         table.add_column("Status")
         table.add_column("Count")
@@ -2073,7 +2090,7 @@ def _menu_manage_api_keys(state: RunState, cfg: ReviewConfig, prov: Provenance, 
     console.print(f"[dim]Using .env at:[/] {env_path}")
     file_values = parse_env_text(env_path.read_text(encoding="utf-8")) if env_path.is_file() else {}
 
-    table = Table(title="API keys")
+    table = Table(title="API keys", show_lines=True)
     table.add_column("Source")
     table.add_column("Env var")
     table.add_column("Status")
@@ -2139,6 +2156,140 @@ def _menu_manage_api_keys(state: RunState, cfg: ReviewConfig, prov: Provenance, 
             os.environ.pop(var, None)
         console.print(f"[green]Deleted all API keys from[/] {env_path}")
         prov.log("manage_api_keys", action="delete_all")
+
+
+def _edit_search_settings(cfg: ReviewConfig, console: Console) -> list:
+    """Lets the user change the mechanical search parameters most likely to
+    need correcting after a run came back empty -- mailto, year range,
+    per-source cap, and which sources to query. Keyword blocks/topic aren't
+    editable here: changing the actual search terms is a protocol decision,
+    not an operational fix, and belongs in a fresh phase rather than a
+    silent in-place edit to one that already ran. Mutates `cfg` directly and
+    returns the field names actually changed."""
+    console.print(
+        f"[dim]Current: mailto={cfg.mailto or '(blank)'}, years={cfg.year_from}-{cfg.year_to}, "
+        f"max_per_source={cfg.max_per_source}, sources={','.join(cfg.sources) or '(none)'}[/]")
+    console.print("[dim]Space toggles a setting to change, Enter confirms.[/]")
+    fields = questionary.checkbox(
+        "Which setting(s) do you want to change?",
+        choices=["mailto", "year_from", "year_to", "max_per_source", "sources"],
+    ).ask() or []
+
+    changed = []
+    if "mailto" in fields:
+        value = (questionary.text("New mailto:", default=cfg.mailto).ask() or "").strip()
+        if value:
+            cfg.mailto = value
+            changed.append("mailto")
+    if "year_from" in fields:
+        value = _ask_int("New year_from:", default=cfg.year_from, minimum=1900)
+        if value is not None:
+            cfg.year_from = value
+            changed.append("year_from")
+    if "year_to" in fields:
+        value = _ask_int("New year_to:", default=cfg.year_to, minimum=1900)
+        if value is not None:
+            cfg.year_to = value
+            changed.append("year_to")
+    if "max_per_source" in fields:
+        value = _ask_int("New max_per_source:", default=cfg.max_per_source, minimum=1)
+        if value is not None:
+            cfg.max_per_source = value
+            changed.append("max_per_source")
+    if "sources" in fields:
+        console.print("[dim]Space toggles a source, Enter confirms.[/]")
+        picked = questionary.checkbox(
+            "Sources to search:",
+            choices=[questionary.Choice(name, checked=name in cfg.sources)
+                     for name in _ALL_SOURCE_NAMES],
+        ).ask()
+        if picked:
+            cfg.sources = picked
+            changed.append("sources")
+    return changed
+
+
+def _menu_rerun_search(state: RunState, cfg: ReviewConfig, prov: Provenance, console: Console) -> None:
+    """Re-runs a phase's search -- and its downstream dedup/prescreen, which
+    would otherwise go stale against a fresh candidates.csv -- either with
+    the current settings or after editing them first. This is the fix half
+    of 'Diagnose this run': that action can tell you a phase came back
+    empty, this is how you actually retry it, from the menu, without
+    abandoning the run and starting over."""
+    phase_nums = sorted({
+        int(key.split(":", 1)[0]) for key in state.state.get("stages", {})
+        if key.split(":", 1)[1] == "search"
+    })
+    if not phase_nums:
+        console.print("[yellow]No phase has run a search yet -- nothing to re-run. "
+                       "Start or resume a review to run the first search.[/]")
+        prov.log("rerun_search", phase=None, changed_fields=[], confirmed=False)
+        return
+
+    console.print("[dim]Arrow keys choose a phase, Enter confirms.[/]")
+    phase = questionary.select(
+        "Re-run search for which phase?",
+        choices=[questionary.Choice(f"Phase {p}", value=p) for p in phase_nums],
+    ).ask()
+    if phase is None:
+        return
+
+    pdir = state.phase_dir(phase)
+    screening_df = _read_csv_safe(pdir / "screening.csv")
+    has_decisions = (not screening_df.empty and "ta_decision" in screening_df.columns
+                      and (screening_df["ta_decision"].astype(str).str.strip() != "").any())
+
+    warning = (f"Re-running search for phase {phase} overwrites candidates.csv, "
+               f"candidates_dedup.csv, and screening.csv in {pdir}.")
+    if has_decisions:
+        warning += (f" Phase {phase}'s screening.csv already has recorded title/abstract "
+                     f"decisions -- those will be LOST.")
+    console.print(f"[yellow]{warning}[/]")
+    confirmed = questionary.confirm(
+        f"Continue re-running phase {phase}'s search?", default=False).ask()
+    if not confirmed:
+        prov.log("rerun_search", phase=phase, changed_fields=[], confirmed=False)
+        return
+
+    console.print("[dim]Arrow keys choose an option, Enter confirms.[/]")
+    mode = questionary.select(
+        "Re-run with the current settings, or change something first?",
+        choices=["Re-run with current settings (no changes)", "Edit settings, then re-run"],
+    ).ask()
+    if mode is None:
+        return
+
+    changed_fields = []
+    if mode == "Edit settings, then re-run":
+        changed_fields = _edit_search_settings(cfg, console)
+        if changed_fields:
+            state.save_config(cfg.to_dict())
+            console.print(f"[green]Updated[/] {', '.join(changed_fields)} for this run.")
+
+    query = cfg.search_query()
+    state.state[f"phase_{phase}_query"] = query
+    state.save()
+
+    # search/dedup/prescreen are cleared so _run_search_dedup_prescreen's own
+    # _should_run_stage() check treats them as pending rather than prompting
+    # ANOTHER "already done -- re-run?" confirm on top of the one just given.
+    for stage in ("search", "dedup", "prescreen"):
+        state.state.get("stages", {}).pop(f"{phase}:{stage}", None)
+    state.save()
+
+    _run_search_dedup_prescreen(state, cfg, prov, console, phase, pdir, query)
+
+    # assist_ta/review_gate (if they'd run) described the OLD candidate set --
+    # clearing them stops the tool from reporting a phase "done" against
+    # records that no longer exist after this redo.
+    for stage in ("assist_ta", "review_gate"):
+        state.state.get("stages", {}).pop(f"{phase}:{stage}", None)
+    state.save()
+
+    n_hits = state.state.get("stages", {}).get(f"{phase}:search", {}).get("counts", {}).get("n_hits")
+    outcome = "done" if state.stage_status(phase, "search") == "done" else "search_failed"
+    prov.log("rerun_search", phase=phase, changed_fields=changed_fields, confirmed=True,
+              outcome=outcome, n_hits=n_hits)
 
 
 # --- core logic ---
@@ -2300,6 +2451,10 @@ _CONSOLIDATION_ACTION_HELP = {
     "Diagnose this run (why did a stage return 0 / where did files go)":
         "Per-phase funnel of stage counts; flags the first stage that returned zero and any "
         "stage marked done whose output file is missing. Start here if a run came back empty.",
+    "Re-run a phase's search (with or without changes)":
+        "Re-runs search + dedup + prescreen for one phase, as-is or after editing mailto/"
+        "year range/sources/max-per-source first. Existing screening decisions for that "
+        "phase are lost -- always confirms before doing anything.",
     "Manage API keys (.env location, add/update/delete)":
         "Shows the .env path in use and lets you add, update, or delete API keys stored there.",
     "Check for updates":
@@ -2339,13 +2494,15 @@ def consolidation_menu(state: RunState, cfg: ReviewConfig, prov: Provenance, con
         "Write provenance report": lambda: _menu_provenance(state, cfg, prov, console),
         "Diagnose this run (why did a stage return 0 / where did files go)":
             lambda: _menu_diagnose_run(state, cfg, prov, console),
+        "Re-run a phase's search (with or without changes)":
+            lambda: _menu_rerun_search(state, cfg, prov, console),
         "Manage API keys (.env location, add/update/delete)":
             lambda: _menu_manage_api_keys(state, cfg, prov, console),
         "Check for updates": lambda: _menu_check_for_updates(state, cfg, prov, console),
     }
 
     console.rule("[bold]Consolidation[/]")
-    legend = Table(title="What each action does")
+    legend = Table(title="What each action does", show_lines=True)
     legend.add_column("Action")
     legend.add_column("What it does")
     for label in actions:
