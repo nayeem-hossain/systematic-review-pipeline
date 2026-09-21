@@ -40,6 +40,24 @@ def test_project_crud():
     assert res.status_code == 200
     assert res.json()["count"] == 1
 
+    # Test pipeline stage endpoints
+    res = client.post(f"/api/projects/{project_id}/stages/search?user_id={user_id}")
+    assert res.status_code == 200
+    assert res.json()["candidates_count"] > 0
+
+    res = client.post(f"/api/projects/{project_id}/stages/dedup?user_id={user_id}")
+    assert res.status_code == 200
+    assert "unique_candidates" in res.json()
+
+    res = client.get(f"/api/projects/{project_id}/stages/fulltext?user_id={user_id}")
+    assert res.status_code == 200
+
+    res = client.get(f"/api/projects/{project_id}/stages/appraisal?user_id={user_id}")
+    assert res.status_code == 200
+
+    res = client.get(f"/api/projects/{project_id}/stages/prisma?user_id={user_id}")
+    assert res.status_code == 200
+
     # Delete project
     res = client.delete(f"/api/projects/{project_id}?user_id={user_id}")
     assert res.status_code == 200

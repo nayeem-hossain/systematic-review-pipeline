@@ -24,6 +24,9 @@
           <span class="text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-800 font-bold">
             {{ projects.length }} / {{ maxAllowed }} Projects
           </span>
+          <button @click="showAccountModal = true" class="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold px-2.5 py-1 rounded border">
+            ⚙️ Account Settings
+          </button>
           <button @click="logout" class="text-xs text-red-600 hover:underline font-bold">Logout</button>
         </div>
         <div v-else class="flex items-center gap-3">
@@ -60,6 +63,52 @@
             {{ isRegistering ? 'Already have an account? Sign in' : "Don't have an account? Register" }}
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- Account & Profile Settings Modal -->
+    <div v-if="showAccountModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-6 space-y-6">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="font-bold text-gray-900 text-lg">⚙️ Profile & Account Settings</h3>
+          <button @click="showAccountModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+
+        <form @submit.prevent="updateAccountProfile" class="space-y-4">
+          <div>
+            <label class="block text-xs font-bold text-gray-700 mb-1">Email Address / Username</label>
+            <input type="email" v-model="profileForm.email" required class="w-full border rounded p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-gray-700 mb-1">New Password (leave blank to keep current)</label>
+            <input type="password" v-model="profileForm.password" class="w-full border rounded p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="••••••••">
+          </div>
+
+          <div class="pt-2 border-t">
+            <h4 class="text-xs font-bold text-gray-800 mb-2">🔑 API Keys for Database Harvesting</h4>
+            <div class="space-y-2">
+              <div>
+                <label class="block text-xs text-gray-600">Scopus API Key</label>
+                <input type="text" v-model="profileForm.api_keys.scopus" class="w-full border rounded p-2 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500" placeholder="Scopus API Key">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-600">Web of Science (WoS) API Key</label>
+                <input type="text" v-model="profileForm.api_keys.wos" class="w-full border rounded p-2 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500" placeholder="WoS API Key">
+              </div>
+            </div>
+          </div>
+
+          <div class="flex justify-between items-center pt-4 border-t">
+            <button type="button" @click="deleteAccount" class="text-xs text-red-600 hover:bg-red-50 px-3 py-2 rounded font-bold border border-red-200">
+              🗑️ Delete Account
+            </button>
+            <div class="flex gap-2">
+              <button type="button" @click="showAccountModal = false" class="px-3 py-1.5 border rounded text-xs font-semibold">Cancel</button>
+              <button type="submit" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-bold shadow">Save Changes</button>
+            </div>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -183,55 +232,198 @@
     <div v-if="currentTab === 'workspace' && activeProject" class="space-y-6">
       <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
         <h2 class="text-xl font-bold text-gray-900 mb-1">{{ activeProject.topic }}</h2>
-        <p class="text-xs text-gray-500">Project ID: {{ activeProject.project_id }} | Status: Active Workspace</p>
+        <p class="text-xs text-gray-500">Project ID: {{ activeProject.project_id }} | Active Review Workspace</p>
 
-        <!-- Action Cards Grid -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-          <div class="bg-blue-50 border border-blue-200 p-4 rounded-lg flex flex-col justify-between">
+        <!-- Pipeline Interactive Stepper -->
+        <div class="mt-6 border-b border-gray-200 overflow-x-auto">
+          <nav class="flex space-x-2 pb-2">
+            <button v-for="st in stages" :key="st.id" @click="activeStage = st.id" :class="{'bg-blue-600 text-white font-bold': activeStage === st.id, 'bg-gray-100 text-gray-700 hover:bg-gray-200': activeStage !== st.id}" class="px-3.5 py-2 rounded-lg text-xs flex items-center gap-1.5 whitespace-nowrap transition-all">
+              <span>{{ st.icon }}</span>
+              <span>{{ st.label }}</span>
+            </button>
+          </nav>
+        </div>
+
+        <!-- STAGE 1: Search & Harvest -->
+        <div v-if="activeStage === 'search'" class="mt-6 space-y-4">
+          <div class="flex justify-between items-center bg-blue-50 p-4 rounded-lg border border-blue-200">
             <div>
-              <h4 class="font-bold text-blue-900 text-sm mb-1">🤖 AI-Assist Screening</h4>
-              <p class="text-xs text-blue-700 mb-3">Build structured screening prompt for free web chatbots and parse replies.</p>
+              <h4 class="font-bold text-blue-900 text-sm">🔎 Search & Harvest Query Candidates</h4>
+              <p class="text-xs text-blue-700">Harvest studies from databases (OpenAlex, Semantic Scholar, CrossRef, arXiv, PubMed, DOAJ).</p>
             </div>
-            <button @click="fetchPrompt" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 rounded shadow">
-              Generate Prompt
+            <button @click="runSearchStage" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
+              Run Search Harvest
             </button>
           </div>
 
-          <div class="bg-green-50 border border-green-200 p-4 rounded-lg flex flex-col justify-between">
-            <div>
-              <h4 class="font-bold text-green-900 text-sm mb-1">🛡️ Human Review Gate</h4>
-              <p class="text-xs text-green-700 mb-3">Inspect AI-proposed includes and exclusions before full-text stage.</p>
-            </div>
-            <button @click="showGateModal = true" class="w-full bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded shadow">
-              Open Review Gate
-            </button>
-          </div>
-
-          <div class="bg-purple-50 border border-purple-200 p-4 rounded-lg flex flex-col justify-between">
-            <div>
-              <h4 class="font-bold text-purple-900 text-sm mb-1">📥 Export References</h4>
-              <p class="text-xs text-purple-700 mb-3">Export finalized included studies directly to BibTeX or RIS format.</p>
-            </div>
-            <div class="flex gap-2">
-              <button @click="exportRefs('bibtex')" class="w-1/2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2 rounded shadow">BibTeX</button>
-              <button @click="exportRefs('ris')" class="w-1/2 bg-purple-800 hover:bg-purple-900 text-white text-xs font-bold py-2 rounded shadow">RIS</button>
-            </div>
+          <div v-if="candidatesList.length > 0" class="border rounded-lg overflow-x-auto">
+            <table class="min-w-full text-xs text-left">
+              <thead class="bg-gray-100 border-b font-bold text-gray-700">
+                <tr>
+                  <th class="p-2.5">Source</th>
+                  <th class="p-2.5">Title</th>
+                  <th class="p-2.5">Authors</th>
+                  <th class="p-2.5">Year</th>
+                  <th class="p-2.5">Venue</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in candidatesList" :key="c.id" class="border-b hover:bg-gray-50">
+                  <td class="p-2.5 uppercase font-semibold text-blue-600">{{ c.source }}</td>
+                  <td class="p-2.5 font-bold text-gray-800">{{ c.title }}</td>
+                  <td class="p-2.5 text-gray-600">{{ c.authors }}</td>
+                  <td class="p-2.5 text-gray-600">{{ c.year }}</td>
+                  <td class="p-2.5 text-gray-500 italic">{{ c.venue }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
 
-      <!-- Generated Prompt Modal/Box -->
-      <div v-if="aiPrompt" class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 space-y-4">
-        <h3 class="font-bold text-gray-800 text-md">Generated AI Screening Prompt</h3>
-        <p class="text-xs text-gray-500">Copy this prompt into ChatGPT, Claude, Gemini, or Copilot. Paste their reply into the box below.</p>
-        <textarea :value="aiPrompt" readonly class="w-full h-40 bg-gray-50 font-mono text-xs p-3 border rounded border-gray-300 outline-none"></textarea>
+        <!-- STAGE 2: Deduplication -->
+        <div v-if="activeStage === 'dedup'" class="mt-6 space-y-4">
+          <div class="flex justify-between items-center bg-indigo-50 p-4 rounded-lg border border-indigo-200">
+            <div>
+              <h4 class="font-bold text-indigo-900 text-sm">🧹 Deduplication Engine</h4>
+              <p class="text-xs text-indigo-700">Perform exact and fuzzy title/DOI matching across search harvests.</p>
+            </div>
+            <button @click="runDedupStage" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
+              Execute Deduplication
+            </button>
+          </div>
 
-        <div class="space-y-2">
-          <label class="block text-xs font-bold text-gray-700">Paste Chatbot Reply Here:</label>
-          <textarea v-model="aiReply" class="w-full h-28 p-3 border rounded border-gray-300 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500" placeholder="Paste response here..."></textarea>
-          <button @click="parseReply" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
-            Parse Response & Ingest Decisions
-          </button>
+          <div v-if="dedupResult" class="p-4 bg-gray-50 border rounded-lg text-xs space-y-1">
+            <p class="font-bold text-gray-800">Deduplication Summary:</p>
+            <p class="text-gray-600">Duplicates Removed: <span class="font-bold text-red-600">{{ dedupResult.duplicates_removed }}</span></p>
+            <p class="text-gray-600">Unique Candidates Remaining: <span class="font-bold text-green-600">{{ dedupResult.unique_candidates }}</span></p>
+          </div>
+        </div>
+
+        <!-- STAGE 3: Title & Abstract Screening -->
+        <div v-if="activeStage === 'ta_screening'" class="mt-6 space-y-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-blue-50 border border-blue-200 p-4 rounded-lg space-y-2">
+              <h4 class="font-bold text-blue-900 text-sm">🤖 AI-Assist Screening Prompt</h4>
+              <p class="text-xs text-blue-700">Build structured prompt for ChatGPT/Claude/Gemini.</p>
+              <button @click="fetchPrompt" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 rounded shadow">
+                Generate Screening Prompt
+              </button>
+            </div>
+
+            <div class="bg-green-50 border border-green-200 p-4 rounded-lg space-y-2">
+              <h4 class="font-bold text-green-900 text-sm">🛡️ Human Review Gate</h4>
+              <p class="text-xs text-green-700">Review and override AI inclusions/exclusions.</p>
+              <button @click="showGateModal = true" class="w-full bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded shadow">
+                Open Review Gate
+              </button>
+            </div>
+          </div>
+
+          <div v-if="aiPrompt" class="bg-gray-50 p-4 rounded-lg border space-y-3">
+            <h4 class="font-bold text-xs text-gray-800">Generated Prompt:</h4>
+            <textarea :value="aiPrompt" readonly class="w-full h-36 font-mono text-xs p-2.5 bg-white border rounded outline-none"></textarea>
+            <label class="block text-xs font-bold text-gray-700">Paste Chatbot Reply:</label>
+            <textarea v-model="aiReply" class="w-full h-24 font-mono text-xs p-2.5 bg-white border rounded outline-none" placeholder="Paste response..."></textarea>
+            <button @click="parseReply" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
+              Ingest Decisions
+            </button>
+          </div>
+        </div>
+
+        <!-- STAGE 4: Full-Text Screening -->
+        <div v-if="activeStage === 'fulltext'" class="mt-6 space-y-4">
+          <div class="flex justify-between items-center bg-purple-50 p-4 rounded-lg border border-purple-200">
+            <div>
+              <h4 class="font-bold text-purple-900 text-sm">📄 Full-Text Eligibility Assessment</h4>
+              <p class="text-xs text-purple-700">Screen full papers for eligibility based on inclusion/exclusion criteria.</p>
+            </div>
+            <button @click="loadFulltextStudies" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
+              Refresh Included Studies List
+            </button>
+          </div>
+
+          <div v-if="fulltextStudies.length > 0" class="border rounded-lg overflow-x-auto">
+            <table class="min-w-full text-xs text-left">
+              <thead class="bg-gray-100 border-b font-bold text-gray-700">
+                <tr>
+                  <th class="p-2.5">ID</th>
+                  <th class="p-2.5">Title</th>
+                  <th class="p-2.5">Decision</th>
+                  <th class="p-2.5">Reason</th>
+                  <th class="p-2.5">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="st in fulltextStudies" :key="st.id" class="border-b hover:bg-gray-50">
+                  <td class="p-2.5 font-mono text-blue-600">{{ st.id }}</td>
+                  <td class="p-2.5 font-bold text-gray-800">{{ st.title }}</td>
+                  <td class="p-2.5">
+                    <span :class="{'bg-green-100 text-green-800': st.ft_decision === 'include', 'bg-red-100 text-red-800': st.ft_decision === 'exclude'}" class="px-2 py-0.5 rounded font-bold uppercase">
+                      {{ st.ft_decision || 'Pending' }}
+                    </span>
+                  </td>
+                  <td class="p-2.5 text-gray-600">{{ st.ft_reason || 'N/A' }}</td>
+                  <td class="p-2.5 flex gap-1">
+                    <button @click="submitFulltextDecision(st.id, 'include')" class="bg-green-600 text-white font-bold px-2 py-1 rounded text-xs">Include</button>
+                    <button @click="submitFulltextDecision(st.id, 'exclude')" class="bg-red-600 text-white font-bold px-2 py-1 rounded text-xs">Exclude</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- STAGE 5: Quality Appraisal & Risk of Bias -->
+        <div v-if="activeStage === 'appraisal'" class="mt-6 space-y-4">
+          <div class="bg-amber-50 p-4 rounded-lg border border-amber-200">
+            <h4 class="font-bold text-amber-900 text-sm mb-1">⚖️ Quality Appraisal & Risk of Bias Instruments</h4>
+            <p class="text-xs text-amber-800">Primary study critical appraisal using domain-specific instruments (ACM Badges, CASP, MMAT, RoB 2, ROBINS-I).</p>
+            <button @click="loadAppraisalData" class="mt-3 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
+              Load Appraisal Checklist
+            </button>
+          </div>
+
+          <div v-if="appraisalData" class="p-4 bg-white border rounded-lg space-y-3 text-xs">
+            <p class="font-bold text-gray-800">Configured Field: <span class="text-blue-600 uppercase">{{ appraisalData.research_field }}</span></p>
+            <p class="font-bold text-gray-800">Active Instruments: <span class="text-purple-600">{{ appraisalData.instruments.join(', ') }}</span></p>
+          </div>
+        </div>
+
+        <!-- STAGE 6: PRISMA Diagram & References Export -->
+        <div v-if="activeStage === 'prisma_export'" class="mt-6 space-y-4">
+          <div class="bg-green-50 p-4 rounded-lg border border-green-200 flex justify-between items-center">
+            <div>
+              <h4 class="font-bold text-green-900 text-sm">📊 PRISMA 2020 Flow Diagram & Export</h4>
+              <p class="text-xs text-green-700">Compute audit counts and export finalized included studies to BibTeX or RIS.</p>
+            </div>
+            <div class="flex gap-2">
+              <button @click="loadPrismaCounts" class="bg-green-600 hover:bg-green-700 text-white font-bold text-xs px-3 py-2 rounded shadow">PRISMA Counts</button>
+              <button @click="exportRefs('bibtex')" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-3 py-2 rounded shadow">BibTeX</button>
+              <button @click="exportRefs('ris')" class="bg-purple-800 hover:bg-purple-900 text-white font-bold text-xs px-3 py-2 rounded shadow">RIS</button>
+            </div>
+          </div>
+
+          <div v-if="prismaCounts" class="p-4 bg-gray-50 border rounded-lg space-y-2 text-xs">
+            <h4 class="font-bold text-gray-800 text-sm border-b pb-1">PRISMA 2020 Flow Diagram Counts</h4>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2">
+              <div class="bg-white p-2.5 rounded border text-center">
+                <span class="text-gray-500 block">Identified</span>
+                <span class="font-bold text-base text-blue-600">{{ prismaCounts.identified }}</span>
+              </div>
+              <div class="bg-white p-2.5 rounded border text-center">
+                <span class="text-gray-500 block">Deduplicated</span>
+                <span class="font-bold text-base text-indigo-600">{{ prismaCounts.duplicates_removed }}</span>
+              </div>
+              <div class="bg-white p-2.5 rounded border text-center">
+                <span class="text-gray-500 block">Title/Abstract Excluded</span>
+                <span class="font-bold text-base text-red-600">{{ prismaCounts.excluded_ta }}</span>
+              </div>
+              <div class="bg-white p-2.5 rounded border text-center">
+                <span class="text-gray-500 block">Final Included</span>
+                <span class="font-bold text-base text-green-600">{{ prismaCounts.included }}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -246,12 +438,28 @@
         return {
           currentUser: JSON.parse(localStorage.getItem('slr_user') || 'null'),
           showAuthModal: false,
+          showAccountModal: false,
           isRegistering: false,
           authForm: { email: '', password: '' },
+          profileForm: { email: '', password: '', api_keys: { scopus: '', wos: '' } },
           projects: [],
           maxAllowed: 5,
           currentTab: 'dashboard',
           activeProject: null,
+          activeStage: 'search',
+          stages: [
+            { id: 'search', label: '1. Search & Harvest', icon: '🔎' },
+            { id: 'dedup', label: '2. Deduplication', icon: '🧹' },
+            { id: 'ta_screening', label: '3. Title & Abstract', icon: '🤖' },
+            { id: 'fulltext', label: '4. Full-Text Screening', icon: '📄' },
+            { id: 'appraisal', label: '5. Quality Appraisal', icon: '⚖️' },
+            { id: 'prisma_export', label: '6. PRISMA & Export', icon: '📊' },
+          ],
+          candidatesList: [],
+          dedupResult: null,
+          fulltextStudies: [],
+          appraisalData: null,
+          prismaCounts: null,
           form: {
             topic: '',
             block1: '',
@@ -286,6 +494,8 @@
             if (res.ok) {
               this.currentUser = data.user;
               localStorage.setItem('slr_user', JSON.stringify(data.user));
+              this.profileForm.email = data.user.email;
+              this.profileForm.api_keys = data.user.api_keys || { scopus: '', wos: '' };
               this.showAuthModal = false;
               this.authForm = { email: '', password: '' };
               await this.fetchProjects();
@@ -294,6 +504,50 @@
             }
           } catch (e) {
             alert('Error communicating with auth server');
+          }
+        },
+        async updateAccountProfile() {
+          if (!this.currentUser) return;
+          try {
+            const res = await fetch(`${API_BASE}/auth/profile`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                user_id: this.currentUser.user_id,
+                new_email: this.profileForm.email,
+                new_password: this.profileForm.password || null,
+                api_keys: this.profileForm.api_keys
+              })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              this.currentUser = data.user;
+              localStorage.setItem('slr_user', JSON.stringify(data.user));
+              this.showAccountModal = false;
+              this.profileForm.password = '';
+              alert('Profile updated successfully!');
+            } else {
+              alert(data.detail || 'Profile update failed');
+            }
+          } catch (e) {
+            alert('Error updating profile');
+          }
+        },
+        async deleteAccount() {
+          if (!confirm('Are you sure you want to permanently delete your account and all projects? This cannot be undone.')) return;
+          try {
+            const res = await fetch(`${API_BASE}/auth/account?user_id=${this.currentUser.user_id}`, {
+              method: 'DELETE'
+            });
+            if (res.ok) {
+              alert('Account deleted.');
+              this.logout();
+              this.showAccountModal = false;
+            } else {
+              alert('Failed to delete account.');
+            }
+          } catch (e) {
+            alert('Error deleting account');
           }
         },
         logout() {
@@ -359,6 +613,76 @@
         openProject(p) {
           this.activeProject = p;
           this.currentTab = 'workspace';
+          this.activeStage = 'search';
+          this.runSearchStage();
+        },
+        async runSearchStage() {
+          if (!this.activeProject) return;
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/search?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            this.candidatesList = data.candidates || [];
+          } catch (e) {
+            console.error(e);
+          }
+        },
+        async runDedupStage() {
+          if (!this.activeProject) return;
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/dedup?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            this.dedupResult = data;
+          } catch (e) {
+            console.error(e);
+          }
+        },
+        async loadFulltextStudies() {
+          if (!this.activeProject) return;
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/fulltext?user_id=${uid}`);
+            const data = await res.json();
+            this.fulltextStudies = data.studies || [];
+          } catch (e) {
+            console.error(e);
+          }
+        },
+        async submitFulltextDecision(studyId, decision) {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          const reason = prompt(`Enter reason for ${decision}ing study ${studyId}:`) || 'Web reviewer assessment';
+          try {
+            await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/fulltext?user_id=${uid}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ study_id: studyId, decision, reason })
+            });
+            await this.loadFulltextStudies();
+          } catch (e) {
+            alert('Error recording decision');
+          }
+        },
+        async loadAppraisalData() {
+          if (!this.activeProject) return;
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/appraisal?user_id=${uid}`);
+            this.appraisalData = await res.json();
+          } catch (e) {
+            console.error(e);
+          }
+        },
+        async loadPrismaCounts() {
+          if (!this.activeProject) return;
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/prisma?user_id=${uid}`);
+            const data = await res.json();
+            this.prismaCounts = data.prisma_counts;
+          } catch (e) {
+            console.error(e);
+          }
         },
         async fetchPrompt() {
           const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
