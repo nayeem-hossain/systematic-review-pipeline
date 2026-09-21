@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Systematic Literature Review Pipeline - Web Workspace</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans min-h-screen">
+  <div id="app" class="max-w-7xl mx-auto p-4 sm:p-6">
+    <!-- Header -->
+    <header class="flex flex-col md:flex-row justify-between items-center pb-6 border-b border-gray-200 mb-6 gap-4">
+      <div>
+        <h1 class="text-2xl font-bold text-blue-900 flex items-center gap-2">
+          <span>📚</span> Systematic Literature Review Pipeline
+        </h1>
+        <p class="text-sm text-gray-600">Guided, PRISMA 2020-compliant systematic literature review web workspace</p>
+      </div>
+      <div class="flex items-center gap-4 bg-white p-2 rounded-lg shadow-sm border border-gray-200">
+        <label class="text-xs font-semibold text-gray-500 uppercase">User ID:</label>
+        <input v-model="userId" @change="fetchProjects" class="text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Enter Account ID">
+        <span class="text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-800 font-bold">
+          {{ projects.length }} / {{ maxAllowed }} Projects
+        </span>
+      </div>
+    </header>
+
+    <!-- Project Limit Banner -->
+    <div v-if="projects.length >= maxAllowed" class="bg-amber-50 border-l-4 border-amber-500 p-4 mb-6 rounded-r shadow-sm">
+      <div class="flex items-center">
+        <span class="text-amber-500 text-xl mr-3">⚠️</span>
+        <div>
+          <p class="font-bold text-amber-800">Account Project Quota Reached ({{ projects.length }}/{{ maxAllowed }})</p>
+          <p class="text-sm text-amber-700">You have reached the maximum 5 free active projects limit. Please delete an existing project before creating a new one.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="flex border-b border-gray-200 mb-6 bg-white rounded-t-lg shadow-sm">
+      <button @click="currentTab = 'dashboard'" :class="{'border-blue-600 text-blue-600 font-bold': currentTab === 'dashboard', 'text-gray-500 hover:text-gray-700': currentTab !== 'dashboard'}" class="py-3 px-6 border-b-2 font-medium text-sm focus:outline-none transition-colors">
+        📊 Projects Dashboard
+      </button>
+      <button @click="currentTab = 'wizard'" :disabled="projects.length >= maxAllowed" :class="{'border-blue-600 text-blue-600 font-bold': currentTab === 'wizard', 'text-gray-400 cursor-not-allowed': projects.length >= maxAllowed, 'text-gray-500 hover:text-gray-700': currentTab !== 'wizard' && projects.length < maxAllowed}" class="py-3 px-6 border-b-2 font-medium text-sm focus:outline-none transition-colors">
+        ➕ Start New Review
+      </button>
+      <button v-if="activeProject" @click="currentTab = 'workspace'" :class="{'border-blue-600 text-blue-600 font-bold': currentTab === 'workspace', 'text-gray-500 hover:text-gray-700': currentTab !== 'workspace'}" class="py-3 px-6 border-b-2 font-medium text-sm focus:outline-none transition-colors">
+        🔬 Active Workspace: {{ activeProject.topic }}
+      </button>
+    </div>
+
+    <!-- TAB 1: Projects Dashboard -->
+    <div v-if="currentTab === 'dashboard'" class="space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-lg font-bold text-gray-800">Your SLR Projects</h2>
+        <button @click="currentTab = 'wizard'" :disabled="projects.length >= maxAllowed" class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold text-sm px-4 py-2 rounded shadow transition-all flex items-center gap-2">
+          <span>+</span> Create New Project
+        </button>
+      </div>
+
+      <div v-if="projects.length === 0" class="bg-white p-12 rounded-xl shadow-sm text-center border border-dashed border-gray-300">
+        <span class="text-4xl mb-3 block">📄</span>
+        <h3 class="text-lg font-bold text-gray-700">No Projects Found</h3>
+        <p class="text-sm text-gray-500 mb-4">Start your systematic literature review by creating a new protocol.</p>
+        <button @click="currentTab = 'wizard'" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold px-4 py-2 rounded shadow">
+          Create Your First Review
+        </button>
+      </div>
+
+      <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div v-for="p in projects" :key="p.project_id" class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow flex flex-col justify-between">
+          <div>
+            <div class="flex justify-between items-start mb-2">
+              <span class="text-xs font-mono font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded">ID: {{ p.project_id }}</span>
+              <span class="text-xs text-gray-500">Phase {{ p.current_phase }} / {{ p.n_phases }}</span>
+            </div>
+            <h3 class="font-bold text-gray-900 text-base mb-2 line-clamp-2">{{ p.topic }}</h3>
+          </div>
+          <div class="pt-4 border-t border-gray-100 flex justify-between items-center mt-4">
+            <button @click="openProject(p)" class="text-sm font-semibold text-blue-600 hover:text-blue-800">
+              Open Workspace →
+            </button>
+            <button @click="deleteProject(p.project_id)" class="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50">
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Setup Wizard -->
+    <div v-if="currentTab === 'wizard'" class="bg-white p-8 rounded-xl shadow-sm border border-gray-200 max-w-3xl mx-auto space-y-6">
+      <h2 class="text-xl font-bold text-gray-800 border-b pb-3">Configure New Systematic Literature Review</h2>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1">Review Topic / Title</label>
+          <input v-model="form.topic" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="e.g. Machine Learning for Network Intrusion Detection">
+        </div>
+
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1">Concept Block 1 Keywords (comma-separated)</label>
+          <input v-model="form.block1" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="e.g. intrusion detection, NIDS, anomaly detection">
+        </div>
+
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1">Concept Block 2 Keywords (comma-separated)</label>
+          <input v-model="form.block2" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="e.g. machine learning, deep learning, transformer">
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-semibold text-gray-700 mb-1">Inclusion Criteria</label>
+            <textarea v-model="form.inclusion" class="w-full border border-gray-300 rounded p-2 text-sm h-20 outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. Peer-reviewed, empirical evaluation of ML-IDS"></textarea>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-gray-700 mb-1">Exclusion Criteria</label>
+            <textarea v-model="form.exclusion" class="w-full border border-gray-300 rounded p-2 text-sm h-20 outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. Non-English, non-peer-reviewed blog post"></textarea>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-sm font-semibold text-gray-700 mb-1">Year From</label>
+            <input type="number" v-model="form.year_from" class="w-full border border-gray-300 rounded p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-gray-700 mb-1">Year To</label>
+            <input type="number" v-model="form.year_to" class="w-full border border-gray-300 rounded p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-gray-700 mb-1">Search Phases</label>
+            <input type="number" v-model="form.n_phases" class="w-full border border-gray-300 rounded p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+        </div>
+
+        <div class="pt-4 flex justify-end gap-3">
+          <button @click="currentTab = 'dashboard'" class="px-4 py-2 border rounded text-sm font-medium hover:bg-gray-50">Cancel</button>
+          <button @click="createProject" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-bold shadow">Create Review Protocol</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Active Project Workspace -->
+    <div v-if="currentTab === 'workspace' && activeProject" class="space-y-6">
+      <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+        <h2 class="text-xl font-bold text-gray-900 mb-1">{{ activeProject.topic }}</h2>
+        <p class="text-xs text-gray-500">Project ID: {{ activeProject.project_id }} | Status: Active Workspace</p>
+
+        <!-- Action Cards Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+          <div class="bg-blue-50 border border-blue-200 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="font-bold text-blue-900 text-sm mb-1">🤖 AI-Assist Screening</h4>
+              <p class="text-xs text-blue-700 mb-3">Build structured screening prompt for free web chatbots and parse replies.</p>
+            </div>
+            <button @click="fetchPrompt" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 rounded shadow">
+              Generate Prompt
+            </button>
+          </div>
+
+          <div class="bg-green-50 border border-green-200 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="font-bold text-green-900 text-sm mb-1">🛡️ Human Review Gate</h4>
+              <p class="text-xs text-green-700 mb-3">Inspect AI-proposed includes and exclusions before full-text stage.</p>
+            </div>
+            <button @click="showGateModal = true" class="w-full bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded shadow">
+              Open Review Gate
+            </button>
+          </div>
+
+          <div class="bg-purple-50 border border-purple-200 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="font-bold text-purple-900 text-sm mb-1">📥 Export References</h4>
+              <p class="text-xs text-purple-700 mb-3">Export finalized included studies directly to BibTeX or RIS format.</p>
+            </div>
+            <div class="flex gap-2">
+              <button @click="exportRefs('bibtex')" class="w-1/2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2 rounded shadow">BibTeX</button>
+              <button @click="exportRefs('ris')" class="w-1/2 bg-purple-800 hover:bg-purple-900 text-white text-xs font-bold py-2 rounded shadow">RIS</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Generated Prompt Modal/Box -->
+      <div v-if="aiPrompt" class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 space-y-4">
+        <h3 class="font-bold text-gray-800 text-md">Generated AI Screening Prompt</h3>
+        <p class="text-xs text-gray-500">Copy this prompt into ChatGPT, Claude, Gemini, or Copilot. Paste their reply into the box below.</p>
+        <textarea :value="aiPrompt" readonly class="w-full h-40 bg-gray-50 font-mono text-xs p-3 border rounded border-gray-300 outline-none"></textarea>
+
+        <div class="space-y-2">
+          <label class="block text-xs font-bold text-gray-700">Paste Chatbot Reply Here:</label>
+          <textarea v-model="aiReply" class="w-full h-28 p-3 border rounded border-gray-300 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500" placeholder="Paste response here..."></textarea>
+          <button @click="parseReply" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
+            Parse Response & Ingest Decisions
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+    const API_BASE = '/api';
+
+    createApp({
+      data() {
+        return {
+          userId: 'default-user',
+          projects: [],
+          maxAllowed: 5,
+          currentTab: 'dashboard',
+          activeProject: null,
+          form: {
+            topic: '',
+            block1: '',
+            block2: '',
+            inclusion: '',
+            exclusion: '',
+            year_from: 2020,
+            year_to: 2026,
+            n_phases: 1
+          },
+          aiPrompt: null,
+          aiReply: '',
+          showGateModal: false
+        };
+      },
+      mounted() {
+        this.fetchProjects();
+      },
+      methods: {
+        async fetchProjects() {
+          try {
+            const res = await fetch(`${API_BASE}/projects?user_id=${this.userId}`);
+            const data = await res.json();
+            this.projects = data.projects || [];
+            this.maxAllowed = data.max_allowed || 5;
+          } catch (e) {
+            console.error(e);
+          }
+        },
+        async createProject() {
+          if (!this.form.topic) return alert('Topic is required');
+          const payload = {
+            user_id: this.userId,
+            topic: this.form.topic,
+            keyword_blocks: [
+              this.form.block1.split(',').map(s => s.trim()).filter(Boolean),
+              this.form.block2.split(',').map(s => s.trim()).filter(Boolean)
+            ],
+            inclusion_criteria: this.form.inclusion,
+            exclusion_criteria: this.form.exclusion,
+            year_from: parseInt(this.form.year_from),
+            year_to: parseInt(this.form.year_to),
+            n_phases: parseInt(this.form.n_phases)
+          };
+          try {
+            const res = await fetch(`${API_BASE}/projects`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (res.ok) {
+              await this.fetchProjects();
+              this.currentTab = 'dashboard';
+            } else {
+              alert(data.detail || 'Failed to create project');
+            }
+          } catch (e) {
+            alert('Error creating project');
+          }
+        },
+        async deleteProject(id) {
+          if (!confirm('Are you sure you want to delete this project?')) return;
+          await fetch(`${API_BASE}/projects/${id}?user_id=${this.userId}`, { method: 'DELETE' });
+          if (this.activeProject && this.activeProject.project_id === id) {
+            this.activeProject = null;
+          }
+          await this.fetchProjects();
+        },
+        openProject(p) {
+          this.activeProject = p;
+          this.currentTab = 'workspace';
+        },
+        async fetchPrompt() {
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/prompt?user_id=${this.userId}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.prompt) {
+              this.aiPrompt = data.prompt;
+            } else {
+              alert(data.message || 'No candidates found to screen.');
+            }
+          } catch (e) {
+            alert('Error generating prompt');
+          }
+        },
+        async parseReply() {
+          if (!this.aiReply) return alert('Paste reply first');
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/parse-reply?user_id=${this.userId}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reply_text: this.aiReply, phase: 1 })
+            });
+            const data = await res.json();
+            alert(`Parsed successfully! Ingested ${data.applied_counts ? Object.keys(data.applied_counts).length : 0} decisions.`);
+            this.aiReply = '';
+            this.aiPrompt = null;
+          } catch (e) {
+            alert('Error parsing reply');
+          }
+        },
+        async exportRefs(fmt) {
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/export/${fmt}?user_id=${this.userId}`);
+            const data = await res.json();
+            if (data.content) {
+              const blob = new Blob([data.content], { type: 'text/plain' });
+              const url = window.URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = data.filename || `references.${fmt}`;
+              a.click();
+            } else {
+              alert(data.detail || 'No exportable content.');
+            }
+          } catch (e) {
+            alert('Error exporting references');
+          }
+        }
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
