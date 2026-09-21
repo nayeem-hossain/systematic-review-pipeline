@@ -9,6 +9,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from server.auth import authenticate_user, register_user
 from srp.appraisal import FIELD_PROFILES, compose_appraisal_disclosure
 from srp.config import ReviewConfig
 from srp.decisions import apply_decisions
@@ -25,9 +26,9 @@ MAX_PROJECTS_PER_USER = 5
 
 
 # --- Schemas ---
-class UserAuth(BaseModel):
-    user_id: str
-    email: Optional[str] = None
+class AuthReq(BaseModel):
+    email: str
+    password: str
 
 
 class ProjectCreateReq(BaseModel):
@@ -60,18 +61,6 @@ class ReviewGateReq(BaseModel):
     to_include: List[str] = []
 
 
-class FullTextDecisionReq(BaseModel):
-    candidate_id: str
-    decision: str  # include | exclude
-    reason: str = ""
-
-
-class ExtractionUpdateReq(BaseModel):
-    study_id: str
-    field: str
-    value: str
-
-
 # --- Helpers ---
 def _get_user_run_dir(user_id: str, project_id: str) -> Path:
     user_dir = BASE_RUNS_DIR / user_id
@@ -89,7 +78,26 @@ def _count_user_projects(user_id: str) -> int:
     return len([d for d in user_dir.iterdir() if d.is_dir()])
 
 
-# --- Endpoints ---
+# --- Auth Endpoints ---
+
+@router.post("/auth/register")
+def api_register(req: AuthReq):
+    try:
+        user_info = register_user(req.email, req.password)
+        return {"status": "success", "user": user_info}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/auth/login")
+def api_login(req: AuthReq):
+    user_info = authenticate_user(req.email, req.password)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return {"status": "success", "user": user_info}
+
+
+# --- Project Endpoints ---
 
 @router.get("/projects")
 def list_projects(user_id: str):
