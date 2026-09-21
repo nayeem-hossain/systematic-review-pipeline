@@ -1,10 +1,8 @@
-import os
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path
 
 from server.routes import router as api_router
 from srp import __version__ as VERSION
@@ -15,13 +13,10 @@ app = FastAPI(
     version=VERSION,
 )
 
-# CORS configuration: avoid wildcard origins with allow_credentials=True
-raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000")
-allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
-
+# CORS configuration for Next.js frontend (Vercel / Local)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

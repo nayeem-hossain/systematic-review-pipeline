@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException
@@ -23,17 +22,14 @@ router = APIRouter()
 BASE_RUNS_DIR = Path("runs_web")
 BASE_RUNS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PROJECTS_PER_USER = 5
-ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-
-def set_runs_dir(path: Path) -> Path:
-    global BASE_RUNS_DIR
-    BASE_RUNS_DIR = Path(path)
-    BASE_RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    return BASE_RUNS_DIR
 
 
 # --- Schemas ---
+class UserAuth(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+
+
 class ProjectCreateReq(BaseModel):
     user_id: str
     topic: str
@@ -64,42 +60,30 @@ class ReviewGateReq(BaseModel):
     to_include: List[str] = []
 
 
+class FullTextDecisionReq(BaseModel):
+    candidate_id: str
+    decision: str  # include | exclude
+    reason: str = ""
+
+
+class ExtractionUpdateReq(BaseModel):
+    study_id: str
+    field: str
+    value: str
+
+
 # --- Helpers ---
-def _validate_id(id_val: str, param_name: str = "ID") -> str:
-    if not id_val or not ID_PATTERN.match(id_val):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid {param_name}: '{id_val}'. Must contain only alphanumeric characters, underscores, or hyphens."
-        )
-    return id_val
-
-
-def _get_user_dir(user_id: str) -> Path:
-    _validate_id(user_id, "user_id")
-    base_resolved = BASE_RUNS_DIR.resolve()
-    user_dir = (BASE_RUNS_DIR / user_id).resolve()
-    try:
-        user_dir.relative_to(base_resolved)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid path traversal attempt")
-    return user_dir
-
-
 def _get_user_run_dir(user_id: str, project_id: str) -> Path:
-    _validate_id(project_id, "project_id")
-    user_dir = _get_user_dir(user_id)
-    pdir = (user_dir / project_id).resolve()
-    try:
-        pdir.relative_to(user_dir)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid path traversal attempt")
+    user_dir = BASE_RUNS_DIR / user_id
+    user_dir.mkdir(exist_ok=True)
+    pdir = user_dir / project_id
     if not pdir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
     return pdir
 
 
 def _count_user_projects(user_id: str) -> int:
-    user_dir = _get_user_dir(user_id)
+    user_dir = BASE_RUNS_DIR / user_id
     if not user_dir.exists():
         return 0
     return len([d for d in user_dir.iterdir() if d.is_dir()])
@@ -109,7 +93,7 @@ def _count_user_projects(user_id: str) -> int:
 
 @router.get("/projects")
 def list_projects(user_id: str):
-    user_dir = _get_user_dir(user_id)
+    user_dir = BASE_RUNS_DIR / user_id
     if not user_dir.exists():
         return {"projects": [], "count": 0, "max_allowed": MAX_PROJECTS_PER_USER}
 
@@ -118,13 +102,12 @@ def list_projects(user_id: str):
         if pdir.is_dir() and (pdir / "config.json").exists():
             state = RunState.load(pdir)
             cfg = state.config
-            created_ts = state.state.get("created") or state.state.get("created_at")
             projects.append({
                 "project_id": pdir.name,
                 "topic": cfg.get("topic"),
                 "n_phases": cfg.get("n_phases"),
                 "current_phase": state.state.get("current_phase", 1),
-                "created": created_ts,
+                "created_at": state.state.get("created_at"),
             })
     return {"projects": projects, "count": len(projects), "max_allowed": MAX_PROJECTS_PER_USER}
 
@@ -138,14 +121,9 @@ def create_project(req: ProjectCreateReq):
             detail=f"Project limit reached. Maximum {MAX_PROJECTS_PER_USER} projects allowed per account. Please delete or clear an existing project to free up space."
         )
 
-    user_dir = _get_user_dir(req.user_id)
-    user_dir.mkdir(parents=True, exist_ok=True)
-
-    while True:
-        project_id = str(uuid.uuid4())[:8]
-        pdir = user_dir / project_id
-        if not pdir.exists():
-            break
+    project_id = str(uuid.uuid4())[:8]
+    user_dir = BASE_RUNS_DIR / req.user_id
+    user_dir.mkdir(exist_ok=True)
 
     profile = FIELD_PROFILES.get(req.research_field, FIELD_PROFILES["software_engineering"])
     appraisal_just = compose_appraisal_disclosure(

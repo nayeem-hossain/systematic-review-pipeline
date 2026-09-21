@@ -233,7 +233,7 @@
       methods: {
         async fetchProjects() {
           try {
-            const res = await fetch(`${API_BASE}/projects?user_id=${encodeURIComponent(this.userId)}`);
+            const res = await fetch(`${API_BASE}/projects?user_id=${this.userId}`);
             const data = await res.json();
             this.projects = data.projects || [];
             this.maxAllowed = data.max_allowed || 5;
@@ -275,7 +275,7 @@
         },
         async deleteProject(id) {
           if (!confirm('Are you sure you want to delete this project?')) return;
-          await fetch(`${API_BASE}/projects/${encodeURIComponent(id)}?user_id=${encodeURIComponent(this.userId)}`, { method: 'DELETE' });
+          await fetch(`${API_BASE}/projects/${id}?user_id=${this.userId}`, { method: 'DELETE' });
           if (this.activeProject && this.activeProject.project_id === id) {
             this.activeProject = null;
           }
@@ -287,9 +287,7 @@
         },
         async fetchPrompt() {
           try {
-            const pid = encodeURIComponent(this.activeProject.project_id);
-            const uid = encodeURIComponent(this.userId);
-            const res = await fetch(`${API_BASE}/projects/${pid}/prompt?user_id=${uid}`, { method: 'POST' });
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/prompt?user_id=${this.userId}`, { method: 'POST' });
             const data = await res.json();
             if (data.prompt) {
               this.aiPrompt = data.prompt;
@@ -303,9 +301,7 @@
         async parseReply() {
           if (!this.aiReply) return alert('Paste reply first');
           try {
-            const pid = encodeURIComponent(this.activeProject.project_id);
-            const uid = encodeURIComponent(this.userId);
-            const res = await fetch(`${API_BASE}/projects/${pid}/parse-reply?user_id=${uid}`, {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/parse-reply?user_id=${this.userId}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ reply_text: this.aiReply, phase: 1 })
@@ -320,10 +316,7 @@
         },
         async exportRefs(fmt) {
           try {
-            const pid = encodeURIComponent(this.activeProject.project_id);
-            const uid = encodeURIComponent(this.userId);
-            const efmt = encodeURIComponent(fmt);
-            const res = await fetch(`${API_BASE}/projects/${pid}/export/${efmt}?user_id=${uid}`);
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/export/${fmt}?user_id=${this.userId}`);
             const data = await res.json();
             if (data.content) {
               const blob = new Blob([data.content], { type: 'text/plain' });
