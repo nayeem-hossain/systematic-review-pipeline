@@ -1,4 +1,9 @@
+import uuid
 import pytest
+
+pytest.importorskip("fastapi")
+pytest.importorskip("httpx")
+
 from fastapi.testclient import TestClient
 from server.main import app
 
@@ -9,7 +14,7 @@ def test_root_endpoint():
     assert response.status_code == 200
 
 def test_project_crud():
-    user_id = "test-user-123"
+    user_id = f"test-user-{uuid.uuid4().hex[:6]}"
 
     # List initially empty
     res = client.get(f"/api/projects?user_id={user_id}")
@@ -45,7 +50,7 @@ def test_project_crud():
     assert res.json()["count"] == 0
 
 def test_project_limit_enforcement():
-    user_id = "test-user-quota"
+    user_id = f"test-user-quota-{uuid.uuid4().hex[:6]}"
 
     for i in range(5):
         payload = {

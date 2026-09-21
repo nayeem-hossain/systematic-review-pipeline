@@ -1,24 +1,21 @@
 from __future__ import annotations
 
-import json
-import os
+import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+import pandas as pd
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-from srp.appraisal import FIELD_PROFILES, INSTRUMENTS, PRIMARY_STUDY, compose_appraisal_disclosure
+from srp.appraisal import FIELD_PROFILES, compose_appraisal_disclosure
 from srp.config import ReviewConfig
-from srp.decisions import apply_decisions, ta_proceeds_mask
+from srp.decisions import apply_decisions
 from srp.export import to_bibtex, to_ris
 from srp.llm_assist import build_screening_prompt, compose_criteria, parse_screening_response
-from srp.methods_report import PhaseSearchRecord, SourceStrategyRow, render_search_methods, render_search_strategy_table
-from srp.prisma import PhaseFrames, derive_prisma_counts_for_run, prisma_residuals
 from srp.provenance import Provenance
-from srp.quality_tier import compute_quality_tier
-from srp.state import RunState, record_key
+from srp.state import RunState
 
 router = APIRouter()
 
@@ -166,7 +163,6 @@ def create_project(req: ProjectCreateReq):
 @router.delete("/projects/{project_id}")
 def delete_project(user_id: str, project_id: str):
     pdir = _get_user_run_dir(user_id, project_id)
-    import shutil
     shutil.rmtree(pdir)
     return {"message": f"Project {project_id} deleted successfully"}
 
@@ -191,7 +187,6 @@ def get_ai_assist_prompt(user_id: str, project_id: str, phase: int = 1):
     dedup_path = ph_dir / "candidates_dedup.csv"
     screening_path = ph_dir / "screening.csv"
 
-    import pandas as pd
     if not dedup_path.exists():
         raise HTTPException(status_code=400, detail="Candidates dedup file not found. Run search first.")
 
@@ -260,7 +255,6 @@ def apply_review_gate(user_id: str, project_id: str, req: ReviewGateReq):
     ph_dir = state.phase_dir(req.phase)
     screening_path = ph_dir / "screening.csv"
 
-    import pandas as pd
     if not screening_path.exists():
         raise HTTPException(status_code=400, detail="Screening file not found.")
 
@@ -285,7 +279,6 @@ def apply_review_gate(user_id: str, project_id: str, req: ReviewGateReq):
 @router.get("/projects/{project_id}/export/{export_format}")
 def export_references(user_id: str, project_id: str, export_format: str):
     pdir = _get_user_run_dir(user_id, project_id)
-    import pandas as pd
     inc_path = pdir / "included_final.csv"
     ext_path = pdir / "extraction.csv"
 
