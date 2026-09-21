@@ -13,6 +13,8 @@ dist/
 
 # review run workspaces created by slr.py (real user data -- keep out of the repo)
 runs/
+runs_web/
+server.log
 
 # A real run writes output/ and pdfs/ into the working directory -- keep them out
 # of git. The committed demonstration run lives under examples/demo_output/ and
