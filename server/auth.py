@@ -67,6 +67,17 @@ def authenticate_user(email: str, password: str) -> Optional[Dict[str, Any]]:
         }
     return None
 
+def get_user_profile(user_id: str) -> Optional[Dict[str, Any]]:
+    users = _load_users()
+    for _, u_data in users.items():
+        if u_data.get("user_id") == user_id:
+            return {
+                "user_id": u_data["user_id"],
+                "email": u_data["email"],
+                "api_keys": u_data.get("api_keys", {}),
+            }
+    return None
+
 def update_user_profile(user_id: str, new_email: Optional[str] = None, new_password: Optional[str] = None, api_keys: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     users = _load_users()
     target_email = None

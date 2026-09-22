@@ -25,6 +25,11 @@ def test_user_register_and_login():
     assert res.status_code == 200
     assert res.json()["user"]["email"] == email
 
+    # Fetch profile GET endpoint
+    res_prof = client.get(f"/api/auth/profile?user_id={user_id}")
+    assert res_prof.status_code == 200
+    assert res_prof.json()["user"]["email"] == email
+
     # Invalid password login
     res = client.post("/api/auth/login", json={"email": email, "password": "wrongpassword"})
     assert res.status_code == 401
