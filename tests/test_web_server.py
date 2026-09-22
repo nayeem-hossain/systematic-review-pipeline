@@ -165,3 +165,44 @@ def test_project_limit_enforcement():
     res = client.post("/api/projects", json=payload)
     assert res.status_code == 400
     assert "Project limit reached" in res.json()["detail"]
+
+
+def test_kappa_route_and_maybe_proceeds():
+    user_id = f"test-user-kappa-{uuid.uuid4().hex[:6]}"
+
+    # Create project
+    create_payload = {
+        "user_id": user_id,
+        "topic": "Test Kappa Review",
+        "keyword_blocks": [["software"], ["testing"]],
+    }
+    res = client.post("/api/projects", json=create_payload)
+    assert res.status_code == 200
+    project_id = res.json()["project_id"]
+
+    # Test kappa route
+    kappa_payload = {
+        "phase": 1,
+        "stage_col": "ta_decision",
+        "sheet_a_text": "id,ta_decision\n1,include\n2,exclude\n3,maybe\n",
+        "sheet_b_text": "id,ta_decision\n1,include\n2,include\n3,maybe\n",
+    }
+    res_k = client.post(f"/api/projects/{project_id}/consolidation/kappa?user_id={user_id}", json=kappa_payload)
+    assert res_k.status_code == 200
+    assert "kappa" in res_k.json()
+    assert res_k.json()["n_compared"] == 3
+
+    # Test parse-reply with 'maybe' and verify get_fulltext_studies includes 'maybe'
+    client.post(f"/api/projects/{project_id}/stages/search?user_id={user_id}")
+    client.post(f"/api/projects/{project_id}/stages/dedup?user_id={user_id}")
+    sample_reply = "1 | MAYBE | uncertain study"
+    client.post(f"/api/projects/{project_id}/parse-reply?user_id={user_id}", json={"reply_text": sample_reply, "phase": 1})
+
+    res_ft = client.get(f"/api/projects/{project_id}/stages/fulltext?user_id={user_id}")
+    assert res_ft.status_code == 200
+    studies = res_ft.json()["studies"]
+    # Study 1 with 'maybe' decision must be included in full-text assessment list
+    assert any(str(s.get("id")) == "1" for s in studies)
+
+    # Clean up project
+    client.delete(f"/api/projects/{project_id}?user_id={user_id}")

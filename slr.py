@@ -834,11 +834,6 @@ def run_phase_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, console
         if _should_run_stage(state, phase, "review_gate", "Human review gate"):
             run_review_gate(state, cfg, prov, phase, pdir, console)
 
-        # 6. QUERY EXPANSION (only if there is a next phase)
-        if phase < n_phases:
-            if _should_run_stage(state, phase, "snowball", "Query expansion"):
-                run_query_expansion(state, cfg, prov, phase, pdir, console)
-
         missing = [s for s in _REQUIRED_PHASE_STAGES if state.stage_status(phase, s) != "done"]
         if missing:
             console.print(Panel(
@@ -848,6 +843,11 @@ def run_phase_loop(state: RunState, cfg: ReviewConfig, prov: Provenance, console
                 f"them.", title="[yellow]Phase not complete[/]", border_style="yellow"))
             prov.log("phase_incomplete", phase=phase, missing=missing)
             return
+
+        # 6. QUERY EXPANSION (only if there is a next phase)
+        if phase < n_phases:
+            if _should_run_stage(state, phase, "snowball", "Query expansion"):
+                run_query_expansion(state, cfg, prov, phase, pdir, console)
 
         if state.state.get("current_phase", 1) <= phase:
             state.state["current_phase"] = phase + 1
@@ -1259,6 +1259,10 @@ def run_review_gate(state: RunState, cfg: ReviewConfig, prov: Provenance, phase:
 # --- core logic ---
 def run_query_expansion(state: RunState, cfg: ReviewConfig, prov: Provenance, phase: int,
                          pdir: Path, console: Console) -> None:
+    if not state.is_stage_done(phase, "review_gate"):
+        console.print(f"[yellow]Phase {phase} review gate is not marked complete -- cannot run query expansion.[/]")
+        return
+
     screening_df = _read_csv_safe(pdir / "screening.csv")
     titles = []
     if not screening_df.empty and "ta_decision" in screening_df.columns:
@@ -1951,8 +1955,8 @@ def _menu_kappa(state: RunState, cfg: ReviewConfig, prov: Provenance, console: C
         console.print(f"[red]Both sheets need a '{stage}' column.[/]")
         return
 
-    rows_a = {_id_to_str(v): d for v, d in zip(df_a["id"], df_a[stage])} if "id" in df_a.columns else {}
-    rows_b = {_id_to_str(v): d for v, d in zip(df_b["id"], df_b[stage])} if "id" in df_b.columns else {}
+    rows_a = {_id_to_str(row.get("id", "")): row.to_dict() for _, row in df_a.iterrows()} if "id" in df_a.columns else {}
+    rows_b = {_id_to_str(row.get("id", "")): row.to_dict() for _, row in df_b.iterrows()} if "id" in df_b.columns else {}
     result = compare_reviewers(rows_a, rows_b, stage_col=stage)
 
     console.print(Panel(result.summary(), title="Agreement", border_style="green"))
