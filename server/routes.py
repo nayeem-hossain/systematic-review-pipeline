@@ -1111,10 +1111,14 @@ def consolidation_export_exclusions(user_id: str, project_id: str):
 @router.post("/projects/{project_id}/consolidation/kappa")
 def consolidation_kappa(user_id: str, project_id: str, req: KappaReq):
     pdir = _get_user_run_dir(user_id, project_id)
-    ph_dir = state = RunState.load(pdir).phase_dir(req.phase)
+    state = RunState.load(pdir)
+    ph_dir = state.phase_dir(req.phase)
 
-    path_a = ph_dir / "screening.csv"
-    df_a = pd.read_csv(path_a) if path_a.exists() else pd.DataFrame()
+    if req.sheet_a_text:
+        df_a = pd.read_csv(io.StringIO(req.sheet_a_text))
+    else:
+        path_a = ph_dir / "screening.csv"
+        df_a = pd.read_csv(path_a) if path_a.exists() else pd.DataFrame()
 
     if req.sheet_b_text:
         df_b = pd.read_csv(io.StringIO(req.sheet_b_text))
@@ -1125,8 +1129,8 @@ def consolidation_kappa(user_id: str, project_id: str, req: KappaReq):
     if df_a.empty or df_b.empty or stage not in df_a.columns or stage not in df_b.columns:
         raise HTTPException(status_code=400, detail=f"Both screening sheets must contain column '{stage}'")
 
-    rows_a = {str(v): d for v, d in zip(df_a["id"], df_a[stage])} if "id" in df_a.columns else {}
-    rows_b = {str(v): d for v, d in zip(df_b["id"], df_b[stage])} if "id" in df_b.columns else {}
+    rows_a = {str(row.get("id", "")): row.to_dict() for _, row in df_a.iterrows()} if "id" in df_a.columns else {}
+    rows_b = {str(row.get("id", "")): row.to_dict() for _, row in df_b.iterrows()} if "id" in df_b.columns else {}
 
     res = compare_reviewers(rows_a, rows_b, stage_col=stage)
 
@@ -1462,7 +1466,7 @@ def get_fulltext_studies(user_id: str, project_id: str):
             if sc_path.exists():
                 sc_df = pd.read_csv(sc_path)
                 if "ta_decision" in sc_df.columns:
-                    inc_mask = sc_df["ta_decision"].astype(str).str.strip().str.lower().isin(["include", "yes", "inc"])
+                    inc_mask = ta_proceeds_mask(sc_df["ta_decision"])
                     records.extend(sc_df[inc_mask].to_dict("records"))
 
         inc_df = pd.DataFrame(records) if records else pd.DataFrame(columns=["id", "title", "authors", "year", "venue", "doi", "abstract"])
