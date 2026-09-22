@@ -85,16 +85,20 @@
             <input type="password" v-model="profileForm.password" class="w-full border rounded p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="••••••••">
           </div>
 
-          <div class="pt-2 border-t">
-            <h4 class="text-xs font-bold text-gray-800 mb-2">🔑 API Keys for Database Harvesting</h4>
-            <div class="space-y-2">
-              <div>
-                <label class="block text-xs text-gray-600">Scopus API Key</label>
-                <input type="text" v-model="profileForm.api_keys.scopus" class="w-full border rounded p-2 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500" placeholder="Scopus API Key">
-              </div>
-              <div>
-                <label class="block text-xs text-gray-600">Web of Science (WoS) API Key</label>
-                <input type="text" v-model="profileForm.api_keys.wos" class="w-full border rounded p-2 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500" placeholder="WoS API Key">
+          <div class="pt-2 border-t max-h-72 overflow-y-auto pr-1">
+            <h4 class="text-xs font-bold text-gray-800 mb-2">🔑 API Keys for Database Harvesting (All 8 Services)</h4>
+            <div class="space-y-3">
+              <div v-for="k in managedKeysList" :key="k.id" class="p-2 border rounded bg-gray-50 space-y-1">
+                <div class="flex justify-between items-center">
+                  <label class="block text-xs font-semibold text-gray-700">{{ k.label }}</label>
+                  <button type="button" @click="testKey(k.id)" :disabled="keyTestResults[k.id]?.testing" class="text-xs bg-blue-100 hover:bg-blue-200 text-blue-800 font-bold px-2 py-0.5 rounded">
+                    {{ keyTestResults[k.id]?.testing ? 'Testing...' : 'Test Key' }}
+                  </button>
+                </div>
+                <input type="text" v-model="profileForm.api_keys[k.id]" class="w-full border rounded p-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500" :placeholder="k.placeholder">
+                <p v-if="keyTestResults[k.id]?.message" :class="{'text-green-600': keyTestResults[k.id].valid, 'text-red-600': !keyTestResults[k.id].valid}" class="text-xs font-semibold">
+                  {{ keyTestResults[k.id].valid ? '✓' : '✗' }} {{ keyTestResults[k.id].message }}
+                </p>
               </div>
             </div>
           </div>
@@ -234,31 +238,40 @@
         <h2 class="text-xl font-bold text-gray-900 mb-1">{{ activeProject.topic }}</h2>
         <p class="text-xs text-gray-500">Project ID: {{ activeProject.project_id }} | Active Review Workspace</p>
 
-        <!-- Pipeline Interactive Stepper -->
-        <div class="mt-6 border-b border-gray-200 overflow-x-auto">
-          <nav class="flex space-x-2 pb-2">
-            <button v-for="st in stages" :key="st.id" @click="activeStage = st.id" :class="{'bg-blue-600 text-white font-bold': activeStage === st.id, 'bg-gray-100 text-gray-700 hover:bg-gray-200': activeStage !== st.id}" class="px-3.5 py-2 rounded-lg text-xs flex items-center gap-1.5 whitespace-nowrap transition-all">
-              <span>{{ st.icon }}</span>
-              <span>{{ st.label }}</span>
-            </button>
-          </nav>
+        <!-- Phase Controls & Stage Selector -->
+        <div class="mt-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-gray-50 p-3 rounded-lg border">
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-bold text-gray-700">Active Search Phase:</span>
+            <select v-model="activePhase" @change="onPhaseChange" class="border rounded p-1.5 text-xs font-bold text-blue-900 bg-white shadow-sm outline-none">
+              <option v-for="ph in activeProject.n_phases || 1" :key="ph" :value="ph">Phase {{ ph }}</option>
+            </select>
+          </div>
+
+          <div class="border-b border-gray-200 overflow-x-auto w-full md:w-auto">
+            <nav class="flex space-x-1">
+              <button v-for="st in stages" :key="st.id" @click="activeStage = st.id" :class="{'bg-blue-600 text-white font-bold': activeStage === st.id, 'bg-white text-gray-700 hover:bg-gray-100': activeStage !== st.id}" class="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 whitespace-nowrap transition-all border shadow-sm">
+                <span>{{ st.icon }}</span>
+                <span>{{ st.label }}</span>
+              </button>
+            </nav>
+          </div>
         </div>
 
         <!-- STAGE 1: Search & Harvest -->
         <div v-if="activeStage === 'search'" class="mt-6 space-y-4">
           <div class="flex justify-between items-center bg-blue-50 p-4 rounded-lg border border-blue-200">
             <div>
-              <h4 class="font-bold text-blue-900 text-sm">🔎 Search & Harvest Query Candidates</h4>
-              <p class="text-xs text-blue-700">Harvest studies from databases (OpenAlex, Semantic Scholar, CrossRef, arXiv, PubMed, DOAJ).</p>
+              <h4 class="font-bold text-blue-900 text-sm">🔎 Search & Harvest Query Candidates (Phase {{ activePhase }})</h4>
+              <p class="text-xs text-blue-700">Harvest studies from APIs (OpenAlex, Semantic Scholar, CrossRef, arXiv, PubMed, DOAJ, IEEE, Scopus, WoS).</p>
             </div>
             <button @click="runSearchStage" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
               Run Search Harvest
             </button>
           </div>
 
-          <div v-if="candidatesList.length > 0" class="border rounded-lg overflow-x-auto">
+          <div v-if="candidatesList.length > 0" class="border rounded-lg overflow-x-auto max-h-96">
             <table class="min-w-full text-xs text-left">
-              <thead class="bg-gray-100 border-b font-bold text-gray-700">
+              <thead class="bg-gray-100 border-b font-bold text-gray-700 sticky top-0">
                 <tr>
                   <th class="p-2.5">Source</th>
                   <th class="p-2.5">Title</th>
@@ -284,8 +297,8 @@
         <div v-if="activeStage === 'dedup'" class="mt-6 space-y-4">
           <div class="flex justify-between items-center bg-indigo-50 p-4 rounded-lg border border-indigo-200">
             <div>
-              <h4 class="font-bold text-indigo-900 text-sm">🧹 Deduplication Engine</h4>
-              <p class="text-xs text-indigo-700">Perform exact and fuzzy title/DOI matching across search harvests.</p>
+              <h4 class="font-bold text-indigo-900 text-sm">🧹 Deduplication Engine (Phase {{ activePhase }})</h4>
+              <p class="text-xs text-indigo-700">Perform exact DOI and fuzzy title/author matching using rapidfuzz.</p>
             </div>
             <button @click="runDedupStage" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
               Execute Deduplication
@@ -299,132 +312,495 @@
           </div>
         </div>
 
-        <!-- STAGE 3: Title & Abstract Screening -->
+        <!-- STAGE 3: Title & Abstract AI-Assist -->
         <div v-if="activeStage === 'ta_screening'" class="mt-6 space-y-4">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="bg-blue-50 border border-blue-200 p-4 rounded-lg space-y-2">
-              <h4 class="font-bold text-blue-900 text-sm">🤖 AI-Assist Screening Prompt</h4>
-              <p class="text-xs text-blue-700">Build structured prompt for ChatGPT/Claude/Gemini.</p>
-              <button @click="fetchPrompt" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 rounded shadow">
-                Generate Screening Prompt
-              </button>
-            </div>
-
-            <div class="bg-green-50 border border-green-200 p-4 rounded-lg space-y-2">
-              <h4 class="font-bold text-green-900 text-sm">🛡️ Human Review Gate</h4>
-              <p class="text-xs text-green-700">Review and override AI inclusions/exclusions.</p>
-              <button @click="showGateModal = true" class="w-full bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded shadow">
-                Open Review Gate
-              </button>
-            </div>
+          <div class="bg-blue-50 border border-blue-200 p-4 rounded-lg space-y-2">
+            <h4 class="font-bold text-blue-900 text-sm">🤖 AI-Assist Screening Prompt & Response Parser</h4>
+            <p class="text-xs text-blue-700">Build batch prompt with inclusion/exclusion criteria for ChatGPT/Claude/Gemini, then ingest decisions.</p>
+            <button @click="fetchPrompt" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-4 py-2 rounded shadow">
+              Generate Screening Prompt
+            </button>
           </div>
 
           <div v-if="aiPrompt" class="bg-gray-50 p-4 rounded-lg border space-y-3">
-            <h4 class="font-bold text-xs text-gray-800">Generated Prompt:</h4>
+            <h4 class="font-bold text-xs text-gray-800">Generated Batch Prompt:</h4>
             <textarea :value="aiPrompt" readonly class="w-full h-36 font-mono text-xs p-2.5 bg-white border rounded outline-none"></textarea>
-            <label class="block text-xs font-bold text-gray-700">Paste Chatbot Reply:</label>
-            <textarea v-model="aiReply" class="w-full h-24 font-mono text-xs p-2.5 bg-white border rounded outline-none" placeholder="Paste response..."></textarea>
+            <label class="block text-xs font-bold text-gray-700">Paste Chatbot Response:</label>
+            <textarea v-model="aiReply" class="w-full h-24 font-mono text-xs p-2.5 bg-white border rounded outline-none" placeholder="1 | INCLUDE | evaluated ML method..."></textarea>
             <button @click="parseReply" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
-              Ingest Decisions
+              Ingest & Apply Decisions
             </button>
           </div>
         </div>
 
-        <!-- STAGE 4: Full-Text Screening -->
-        <div v-if="activeStage === 'fulltext'" class="mt-6 space-y-4">
-          <div class="flex justify-between items-center bg-purple-50 p-4 rounded-lg border border-purple-200">
+        <!-- STAGE 4: Human Review Gate -->
+        <div v-if="activeStage === 'review_gate'" class="mt-6 space-y-4">
+          <div class="flex justify-between items-center bg-green-50 p-4 rounded-lg border border-green-200">
             <div>
-              <h4 class="font-bold text-purple-900 text-sm">📄 Full-Text Eligibility Assessment</h4>
-              <p class="text-xs text-purple-700">Screen full papers for eligibility based on inclusion/exclusion criteria.</p>
+              <h4 class="font-bold text-green-900 text-sm">🛡️ Human Review Gate (Phase {{ activePhase }})</h4>
+              <p class="text-xs text-green-700">Review AI proposed includes/excludes and apply reviewer overrides.</p>
             </div>
-            <button @click="loadFulltextStudies" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
-              Refresh Included Studies List
+            <button @click="loadReviewGateData" class="bg-green-600 hover:bg-green-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
+              Load Gate Data
             </button>
           </div>
 
-          <div v-if="fulltextStudies.length > 0" class="border rounded-lg overflow-x-auto">
-            <table class="min-w-full text-xs text-left">
+          <div v-if="reviewGateData" class="space-y-4 text-xs">
+            <div class="p-3 bg-white border rounded shadow-sm flex gap-4">
+              <span>Total: <strong>{{ reviewGateData.total_records }}</strong></span>
+              <span class="text-green-700">Included/Maybe: <strong>{{ reviewGateData.included_or_maybe.length }}</strong></span>
+              <span class="text-red-700">Excluded: <strong>{{ reviewGateData.excluded.length }}</strong></span>
+              <span class="text-amber-700">Undecided: <strong>{{ reviewGateData.undecided.length }}</strong></span>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <!-- Included List -->
+              <div class="border rounded-lg p-3 bg-white space-y-2">
+                <h5 class="font-bold text-green-800 text-xs border-b pb-1">TA Included / Maybe (Proceed to Full-Text)</h5>
+                <div class="max-h-60 overflow-y-auto space-y-1">
+                  <div v-for="r in reviewGateData.included_or_maybe" :key="r.id" class="p-2 border rounded hover:bg-gray-50 flex justify-between items-center">
+                    <div>
+                      <p class="font-bold text-gray-800">[{{ r.id }}] {{ r.title }}</p>
+                      <p class="text-gray-500 italic">{{ r.ta_decision }} - {{ r.ta_reason }}</p>
+                    </div>
+                    <button @click="toggleFlipToExclude(r.id)" :class="{'bg-red-600 text-white': gateExcludes.includes(r.id), 'bg-gray-200 text-gray-700': !gateExcludes.includes(r.id)}" class="text-xs font-bold px-2 py-1 rounded">
+                      {{ gateExcludes.includes(r.id) ? 'Will Exclude' : 'Flip Exclude' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Excluded List -->
+              <div class="border rounded-lg p-3 bg-white space-y-2">
+                <h5 class="font-bold text-red-800 text-xs border-b pb-1">AI Excluded Candidates (Check False Exclusions)</h5>
+                <div class="max-h-60 overflow-y-auto space-y-1">
+                  <div v-for="r in reviewGateData.excluded" :key="r.id" class="p-2 border rounded hover:bg-gray-50 flex justify-between items-center">
+                    <div>
+                      <p class="font-bold text-gray-800">[{{ r.id }}] {{ r.title }}</p>
+                      <p class="text-gray-500 italic">{{ r.ta_reason }}</p>
+                    </div>
+                    <button @click="toggleFlipToInclude(r.id)" :class="{'bg-green-600 text-white': gateIncludes.includes(r.id), 'bg-gray-200 text-gray-700': !gateIncludes.includes(r.id)}" class="text-xs font-bold px-2 py-1 rounded">
+                      {{ gateIncludes.includes(r.id) ? 'Will Include' : 'Rescue Include' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button @click="submitReviewGate" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 rounded text-xs shadow">
+              Apply Gate Overrides & Confirm Phase {{ activePhase }} Gate
+            </button>
+          </div>
+        </div>
+
+        <!-- STAGE 5: Query Expansion -->
+        <div v-if="activeStage === 'query_expansion'" class="mt-6 space-y-4">
+          <div class="bg-purple-50 border border-purple-200 p-4 rounded-lg space-y-2">
+            <h4 class="font-bold text-purple-900 text-sm">📈 Query Expansion for Next Phase</h4>
+            <p class="text-xs text-purple-700">Extract frequent keywords from Phase {{ activePhase }} included titles and expand query for Phase {{ activePhase + 1 }}.</p>
+            <button @click="loadQueryExpansion" class="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-4 py-2 rounded shadow">
+              Suggest Expansion Terms
+            </button>
+          </div>
+
+          <div v-if="queryExpansionData" class="bg-white p-4 border rounded-lg space-y-3 text-xs">
+            <p class="font-bold text-gray-800">Current Keywords: <span class="text-blue-600">{{ queryExpansionData.current_keywords }}</span></p>
+
+            <div>
+              <label class="block font-bold text-gray-700 mb-1">Suggested Frequent Terms:</label>
+              <div class="flex flex-wrap gap-2">
+                <label v-for="term in queryExpansionData.suggested_terms" :key="term" class="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded border">
+                  <input type="checkbox" :value="term" v-model="selectedExpansionTerms">
+                  <span>{{ term }}</span>
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <label class="block font-bold text-gray-700 mb-1">Additional Custom Keywords (comma-separated):</label>
+              <input type="text" v-model="extraExpansionTerms" class="w-full border rounded p-2 text-xs outline-none focus:ring-2 focus:ring-purple-500" placeholder="e.g. classifier, ensemble">
+            </div>
+
+            <button @click="submitQueryExpansion" class="bg-purple-600 hover:bg-purple-700 text-white font-bold px-4 py-2 rounded text-xs shadow">
+              Commit Query Expansion & Advance Phase
+            </button>
+          </div>
+        </div>
+
+        <!-- CONSOLIDATION DASHBOARD -->
+        <div v-if="activeStage === 'consolidation'" class="mt-6 space-y-6">
+          <div class="bg-gray-100 p-4 rounded-lg border">
+            <h3 class="font-bold text-gray-900 text-base mb-1">⚙️ Consolidation Dashboard (All 19 SLR Actions)</h3>
+            <p class="text-xs text-gray-600">Merge phases, walk citation graph, download PDFs, complete full-text appraisal, verify DOIs, generate PRISMA diagrams, and export data.</p>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+            <!-- 1. Merge Across Phases -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-blue-900">1. Merge TA-Included Studies</h5>
+              <p class="text-gray-500">Combine title/abstract included records across all phases.</p>
+              <button @click="doConsolidationMerge" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 rounded shadow">Run Merge</button>
+            </div>
+
+            <!-- 2. Citation Snowballing -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-blue-900">2. Citation Snowballing</h5>
+              <p class="text-gray-500">Backward/forward reference graph walking via OpenAlex.</p>
+              <button @click="showSnowballModal = true" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 rounded shadow">Run Snowballing</button>
+            </div>
+
+            <!-- 3. Merge Snowball -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-blue-900">3. Merge Snowball Results</h5>
+              <p class="text-gray-500">Fold screened citation candidates into final included set.</p>
+              <button @click="doMergeSnowball" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 rounded shadow">Merge Snowball</button>
+            </div>
+
+            <!-- 4. Download PDFs -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-blue-900">4. Download Open-Access PDFs</h5>
+              <p class="text-gray-500">Resolve & download PDFs via Unpaywall, arXiv, OpenAlex.</p>
+              <button @click="doDownloadPdfs" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 rounded shadow">Download PDFs</button>
+            </div>
+
+            <!-- 5. Full-Text Screening -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-blue-900">5. Full-Text Screening</h5>
+              <p class="text-gray-500">Record full-text eligibility decisions and PRISMA reasons.</p>
+              <button @click="showFulltextModal = true" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 rounded shadow">Full-Text Modal</button>
+            </div>
+
+            <!-- 6. Verify Citations -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-blue-900">6. Verify Citations (DOIs)</h5>
+              <p class="text-gray-500">Cross-check claimed titles against Crossref DOIs.</p>
+              <button @click="doVerifyCitations" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 rounded shadow">Verify DOIs</button>
+            </div>
+
+            <!-- 7. Build Extraction Sheet -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-purple-900">7. Build Extraction Sheet</h5>
+              <p class="text-gray-500">Generate schema template with quality appraisal columns.</p>
+              <button @click="doBuildExtraction" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-1.5 rounded shadow">Build Extraction</button>
+            </div>
+
+            <!-- 8. Review/Edit Extraction Record -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-purple-900">8. Edit Extraction Record</h5>
+              <p class="text-gray-500">Edit venue tier, R/A/T/C scores, and quality tier.</p>
+              <button @click="showExtractionModal = true" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-1.5 rounded shadow">Open Record Editor</button>
+            </div>
+
+            <!-- 9. PRISMA & Tier Figures -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-purple-900">9. PRISMA & Tier Figures</h5>
+              <p class="text-gray-500">Render PRISMA 2020 flow diagrams and quality charts.</p>
+              <button @click="doGenerateFigures" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-1.5 rounded shadow">Generate Figures</button>
+            </div>
+
+            <!-- 10. Export References -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-indigo-900">10. Export References</h5>
+              <p class="text-gray-500">Export included set to BibTeX and RIS files.</p>
+              <div class="flex gap-2">
+                <button @click="exportRefs('bibtex')" class="w-1/2 bg-indigo-600 text-white font-bold py-1.5 rounded shadow">BibTeX</button>
+                <button @click="exportRefs('ris')" class="w-1/2 bg-indigo-800 text-white font-bold py-1.5 rounded shadow">RIS</button>
+              </div>
+            </div>
+
+            <!-- 11. Export Full-Text Exclusions -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-indigo-900">11. Export Full-Text Exclusions</h5>
+              <p class="text-gray-500">Export PRISMA item 16b excluded studies table.</p>
+              <button @click="doExportExclusions" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-1.5 rounded shadow">Export Exclusions</button>
+            </div>
+
+            <!-- 12. Cohen's Kappa -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-indigo-900">12. Inter-Rater Agreement</h5>
+              <p class="text-gray-500">Compute Cohen's kappa and disagreement matrix.</p>
+              <button @click="showKappaModal = true" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-1.5 rounded shadow">Compute Kappa</button>
+            </div>
+
+            <!-- 13. Draft Methods Paragraph -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-green-900">13. Draft Methods Paragraph</h5>
+              <p class="text-gray-500">Auto-draft PRISMA search methods prose and strategy table.</p>
+              <button @click="doMethodsReport" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-1.5 rounded shadow">Draft Methods</button>
+            </div>
+
+            <!-- 14. Review Self-Appraisal -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-green-900">14. Self-Appraisal Checklist</h5>
+              <p class="text-gray-500">Generate AMSTAR 2 / ROBIS / MECCIR review checklist.</p>
+              <button @click="doSelfAppraisal" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-1.5 rounded shadow">Generate Checklist</button>
+            </div>
+
+            <!-- 15. Provenance Report -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-green-900">15. Write Provenance Report</h5>
+              <p class="text-gray-500">Render complete PROVENANCE.md audit log.</p>
+              <button @click="doProvenanceReport" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-1.5 rounded shadow">Write Provenance</button>
+            </div>
+
+            <!-- 16. Diagnose Run -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-amber-900">16. Diagnose This Run</h5>
+              <p class="text-gray-500">Inspect funnel stage counts and missing files.</p>
+              <button @click="doDiagnoseRun" class="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 rounded shadow">Run Diagnostics</button>
+            </div>
+
+            <!-- 17. Re-run Phase Search -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-amber-900">17. Re-run Phase Search</h5>
+              <p class="text-gray-500">Update search settings and re-execute search & dedup.</p>
+              <button @click="showRerunModal = true" class="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 rounded shadow">Re-run Search</button>
+            </div>
+
+            <!-- 18. Manage API Keys -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-amber-900">18. Manage API Keys</h5>
+              <p class="text-gray-500">Manage all 8 harvesting API keys in account profile.</p>
+              <button @click="showAccountModal = true" class="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 rounded shadow">Open Key Settings</button>
+            </div>
+
+            <!-- 19. Check Version & Updates -->
+            <div class="p-4 bg-white border rounded-lg space-y-2 hover:shadow-md">
+              <h5 class="font-bold text-gray-900">19. Check for Updates</h5>
+              <p class="text-gray-500">Check GitHub latest release against local version.</p>
+              <button @click="doVersionCheck" class="w-full bg-gray-700 hover:bg-gray-800 text-white font-bold py-1.5 rounded shadow">Check Version</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Full-Text Screening Modal -->
+    <div v-if="showFulltextModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-xl max-w-4xl w-full p-6 space-y-4 max-h-screen overflow-y-auto">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="font-bold text-gray-900 text-lg">📄 Full-Text Screening & Eligibility Assessment</h3>
+          <button @click="showFulltextModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div class="flex justify-between items-center">
+          <button @click="loadFulltextStudies" class="bg-blue-600 text-white font-bold text-xs px-3 py-1.5 rounded shadow">Refresh Studies List</button>
+        </div>
+        <div v-if="fulltextStudies.length > 0" class="border rounded-lg overflow-x-auto text-xs">
+          <table class="min-w-full text-left">
+            <thead class="bg-gray-100 border-b font-bold text-gray-700">
+              <tr>
+                <th class="p-2">ID</th>
+                <th class="p-2">Title</th>
+                <th class="p-2">Decision</th>
+                <th class="p-2">Reason</th>
+                <th class="p-2">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="st in fulltextStudies" :key="st.id" class="border-b hover:bg-gray-50">
+                <td class="p-2 font-mono text-blue-600">{{ st.id }}</td>
+                <td class="p-2 font-bold text-gray-800">{{ st.title }}</td>
+                <td class="p-2">
+                  <span :class="{'bg-green-100 text-green-800': st.ft_decision === 'include', 'bg-red-100 text-red-800': st.ft_decision === 'exclude'}" class="px-2 py-0.5 rounded font-bold uppercase">
+                    {{ st.ft_decision || 'Pending' }}
+                  </span>
+                </td>
+                <td class="p-2 text-gray-600">{{ st.ft_reason || 'N/A' }}</td>
+                <td class="p-2 flex gap-1">
+                  <button @click="submitFulltextDecision(st.id, 'include')" class="bg-green-600 text-white font-bold px-2 py-1 rounded">Include</button>
+                  <button @click="submitFulltextDecision(st.id, 'exclude')" class="bg-red-600 text-white font-bold px-2 py-1 rounded">Exclude</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Snowball Modal -->
+    <div v-if="showSnowballModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4 text-xs">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="font-bold text-gray-900 text-base">🔄 Citation Snowballing (Wohlin 2014)</h3>
+          <button @click="showSnowballModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div>
+          <label class="block font-bold text-gray-700 mb-1">Direction:</label>
+          <select v-model="snowballForm.direction" class="w-full border rounded p-2 outline-none">
+            <option value="both">Both (Backward & Forward)</option>
+            <option value="backward">Backward (References)</option>
+            <option value="forward">Forward (Citations)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block font-bold text-gray-700 mb-1">Max Per Seed Study:</label>
+          <input type="number" v-model="snowballForm.max_per_seed" class="w-full border rounded p-2 outline-none">
+        </div>
+        <button @click="doSnowballing" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded shadow">
+          Execute Snowball Graph Search
+        </button>
+      </div>
+    </div>
+
+    <!-- Extraction Record Editor Modal -->
+    <div v-if="showExtractionModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-xl max-w-4xl w-full p-6 space-y-4 max-h-screen overflow-y-auto text-xs">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="font-bold text-gray-900 text-base">📝 Extraction & Quality Scoring Sheet Editor</h3>
+          <button @click="showExtractionModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div class="flex justify-between items-center">
+          <button @click="loadExtractionRecords" class="bg-purple-600 text-white font-bold px-3 py-1.5 rounded shadow">Refresh Sheet Records</button>
+        </div>
+        <div v-if="extractionRecords.length > 0" class="space-y-4">
+          <div class="border rounded-lg overflow-x-auto">
+            <table class="min-w-full text-left">
               <thead class="bg-gray-100 border-b font-bold text-gray-700">
                 <tr>
-                  <th class="p-2.5">ID</th>
-                  <th class="p-2.5">Title</th>
-                  <th class="p-2.5">Decision</th>
-                  <th class="p-2.5">Reason</th>
-                  <th class="p-2.5">Action</th>
+                  <th class="p-2">ID</th>
+                  <th class="p-2">Title</th>
+                  <th class="p-2">Venue Tier</th>
+                  <th class="p-2">R</th>
+                  <th class="p-2">A</th>
+                  <th class="p-2">T</th>
+                  <th class="p-2">C</th>
+                  <th class="p-2">Quality Tier</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="st in fulltextStudies" :key="st.id" class="border-b hover:bg-gray-50">
-                  <td class="p-2.5 font-mono text-blue-600">{{ st.id }}</td>
-                  <td class="p-2.5 font-bold text-gray-800">{{ st.title }}</td>
-                  <td class="p-2.5">
-                    <span :class="{'bg-green-100 text-green-800': st.ft_decision === 'include', 'bg-red-100 text-red-800': st.ft_decision === 'exclude'}" class="px-2 py-0.5 rounded font-bold uppercase">
-                      {{ st.ft_decision || 'Pending' }}
-                    </span>
-                  </td>
-                  <td class="p-2.5 text-gray-600">{{ st.ft_reason || 'N/A' }}</td>
-                  <td class="p-2.5 flex gap-1">
-                    <button @click="submitFulltextDecision(st.id, 'include')" class="bg-green-600 text-white font-bold px-2 py-1 rounded text-xs">Include</button>
-                    <button @click="submitFulltextDecision(st.id, 'exclude')" class="bg-red-600 text-white font-bold px-2 py-1 rounded text-xs">Exclude</button>
-                  </td>
+                <tr v-for="r in extractionRecords" :key="r.id" class="border-b hover:bg-gray-50">
+                  <td class="p-2 font-mono text-purple-600 font-bold">{{ r.id }}</td>
+                  <td class="p-2 font-bold text-gray-800">{{ r.title }}</td>
+                  <td class="p-2 font-semibold">{{ r.venue_tier || 'N/A' }}</td>
+                  <td class="p-2">{{ r.R || '-' }}</td>
+                  <td class="p-2">{{ r.A || '-' }}</td>
+                  <td class="p-2">{{ r.T || '-' }}</td>
+                  <td class="p-2">{{ r.C || '-' }}</td>
+                  <td class="p-2 font-bold text-purple-800">{{ r.quality_tier || '-' }}</td>
                 </tr>
               </tbody>
             </table>
           </div>
-        </div>
 
-        <!-- STAGE 5: Quality Appraisal & Risk of Bias -->
-        <div v-if="activeStage === 'appraisal'" class="mt-6 space-y-4">
-          <div class="bg-amber-50 p-4 rounded-lg border border-amber-200">
-            <h4 class="font-bold text-amber-900 text-sm mb-1">⚖️ Quality Appraisal & Risk of Bias Instruments</h4>
-            <p class="text-xs text-amber-800">Primary study critical appraisal using domain-specific instruments (ACM Badges, CASP, MMAT, RoB 2, ROBINS-I).</p>
-            <button @click="loadAppraisalData" class="mt-3 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-4 py-2 rounded shadow">
-              Load Appraisal Checklist
-            </button>
-          </div>
-
-          <div v-if="appraisalData" class="p-4 bg-white border rounded-lg space-y-3 text-xs">
-            <p class="font-bold text-gray-800">Configured Field: <span class="text-blue-600 uppercase">{{ appraisalData.research_field }}</span></p>
-            <p class="font-bold text-gray-800">Active Instruments: <span class="text-purple-600">{{ appraisalData.instruments.join(', ') }}</span></p>
-          </div>
-        </div>
-
-        <!-- STAGE 6: PRISMA Diagram & References Export -->
-        <div v-if="activeStage === 'prisma_export'" class="mt-6 space-y-4">
-          <div class="bg-green-50 p-4 rounded-lg border border-green-200 flex justify-between items-center">
-            <div>
-              <h4 class="font-bold text-green-900 text-sm">📊 PRISMA 2020 Flow Diagram & Export</h4>
-              <p class="text-xs text-green-700">Compute audit counts and export finalized included studies to BibTeX or RIS.</p>
-            </div>
-            <div class="flex gap-2">
-              <button @click="loadPrismaCounts" class="bg-green-600 hover:bg-green-700 text-white font-bold text-xs px-3 py-2 rounded shadow">PRISMA Counts</button>
-              <button @click="exportRefs('bibtex')" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-3 py-2 rounded shadow">BibTeX</button>
-              <button @click="exportRefs('ris')" class="bg-purple-800 hover:bg-purple-900 text-white font-bold text-xs px-3 py-2 rounded shadow">RIS</button>
-            </div>
-          </div>
-
-          <div v-if="prismaCounts" class="p-4 bg-gray-50 border rounded-lg space-y-2 text-xs">
-            <h4 class="font-bold text-gray-800 text-sm border-b pb-1">PRISMA 2020 Flow Diagram Counts</h4>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2">
-              <div class="bg-white p-2.5 rounded border text-center">
-                <span class="text-gray-500 block">Identified</span>
-                <span class="font-bold text-base text-blue-600">{{ prismaCounts.identified }}</span>
+          <!-- Single Field Edit Form -->
+          <div class="p-4 bg-gray-50 rounded-lg border space-y-3">
+            <h4 class="font-bold text-gray-800">Edit Study Field:</h4>
+            <div class="grid grid-cols-3 gap-3">
+              <div>
+                <label class="block font-bold mb-1">Study ID:</label>
+                <select v-model="editingStudyId" class="w-full border rounded p-1.5">
+                  <option v-for="r in extractionRecords" :key="r.id" :value="r.id">{{ r.id }} - {{ r.title }}</option>
+                </select>
               </div>
-              <div class="bg-white p-2.5 rounded border text-center">
-                <span class="text-gray-500 block">Deduplicated</span>
-                <span class="font-bold text-base text-indigo-600">{{ prismaCounts.duplicates_removed }}</span>
+              <div>
+                <label class="block font-bold mb-1">Field:</label>
+                <select v-model="editingField" class="w-full border rounded p-1.5">
+                  <option value="venue_tier">venue_tier (T1/T2/T3)</option>
+                  <option value="R">R - Rigor (L/S/H)</option>
+                  <option value="A">A - Artifacts (L/S/H)</option>
+                  <option value="T">T - Threat Model (L/S/H)</option>
+                  <option value="C">C - Currency (L/S/H)</option>
+                  <option value="quality_tier">quality_tier (A/B/C)</option>
+                  <option value="key_findings">key_findings</option>
+                  <option value="notes">notes</option>
+                </select>
               </div>
-              <div class="bg-white p-2.5 rounded border text-center">
-                <span class="text-gray-500 block">Title/Abstract Excluded</span>
-                <span class="font-bold text-base text-red-600">{{ prismaCounts.excluded_ta }}</span>
-              </div>
-              <div class="bg-white p-2.5 rounded border text-center">
-                <span class="text-gray-500 block">Final Included</span>
-                <span class="font-bold text-base text-green-600">{{ prismaCounts.included }}</span>
+              <div>
+                <label class="block font-bold mb-1">Value:</label>
+                <input type="text" v-model="editingValue" class="w-full border rounded p-1.5" placeholder="Value">
               </div>
             </div>
+            <button @click="submitExtractionEdit" class="bg-purple-600 text-white font-bold px-4 py-1.5 rounded shadow">Save Field Edit</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Cohen's Kappa Modal -->
+    <div v-if="showKappaModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 space-y-4 text-xs">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="font-bold text-gray-900 text-base">📊 Inter-Rater Agreement (Cohen's Kappa)</h3>
+          <button @click="showKappaModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div>
+          <label class="block font-bold mb-1">Stage Column:</label>
+          <select v-model="kappaForm.stage_col" class="w-full border rounded p-2">
+            <option value="ta_decision">Title / Abstract Stage (ta_decision)</option>
+            <option value="ft_decision">Full Text Stage (ft_decision)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block font-bold mb-1">Reviewer B CSV Content (optional -- compares against current sheet if empty):</label>
+          <textarea v-model="kappaForm.sheet_b_text" class="w-full h-24 border rounded p-2 font-mono" placeholder="id,ta_decision&#10;1,include..."></textarea>
+        </div>
+        <button @click="submitKappa" class="w-full bg-indigo-600 text-white font-bold py-2 rounded shadow">Compute Agreement & Conflicts</button>
+
+        <div v-if="kappaResult" class="p-3 bg-gray-50 border rounded space-y-2">
+          <p class="font-bold text-gray-800">{{ kappaResult.summary }}</p>
+          <p>Kappa: <strong>{{ kappaResult.kappa !== null ? kappaResult.kappa : 'N/A' }}</strong> | Percent Agreement: <strong>{{ kappaResult.percent_agreement }}%</strong></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report Viewer Modal -->
+    <div v-if="showReportModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-xl max-w-3xl w-full p-6 space-y-4 max-h-screen overflow-y-auto text-xs">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="font-bold text-gray-900 text-base">{{ reportModalTitle }}</h3>
+          <button @click="showReportModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <textarea :value="reportModalContent" readonly class="w-full h-96 border rounded p-3 font-mono text-xs bg-gray-50 outline-none"></textarea>
+        <button @click="copyReportContent" class="bg-blue-600 text-white font-bold px-4 py-2 rounded shadow">Copy to Clipboard</button>
+      </div>
+    </div>
+
+    <!-- Diagnostics Modal -->
+    <div v-if="showDiagnoseModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 space-y-4 text-xs">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="font-bold text-gray-900 text-base">🔍 Run Diagnostics & Funnel Audit</h3>
+          <button @click="showDiagnoseModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div v-if="diagnoseResult" class="space-y-3">
+          <div v-for="ph in diagnoseResult.phases_funnel" :key="ph.phase" class="border rounded p-3 bg-gray-50 space-y-1">
+            <h5 class="font-bold text-amber-900">Phase {{ ph.phase }} Stage Funnel:</h5>
+            <div v-for="st in ph.stages" :key="st.stage" class="flex justify-between text-xs">
+              <span>{{ st.label }}:</span>
+              <span class="font-bold">{{ st.status }} (Count: {{ st.count !== null ? st.count : '-' }})</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Re-run Search Modal -->
+    <div v-if="showRerunModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4 text-xs">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="font-bold text-gray-900 text-base">🔄 Re-run Phase Search</h3>
+          <button @click="showRerunModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div>
+          <label class="block font-bold mb-1">Mailto Email:</label>
+          <input type="email" v-model="rerunForm.mailto" class="w-full border rounded p-2 outline-none">
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block font-bold mb-1">Year From:</label>
+            <input type="number" v-model="rerunForm.year_from" class="w-full border rounded p-2 outline-none">
+          </div>
+          <div>
+            <label class="block font-bold mb-1">Year To:</label>
+            <input type="number" v-model="rerunForm.year_to" class="w-full border rounded p-2 outline-none">
+          </div>
+        </div>
+        <div>
+          <label class="block font-bold mb-1">Max Per Source:</label>
+          <input type="number" v-model="rerunForm.max_per_source" class="w-full border rounded p-2 outline-none">
+        </div>
+        <button @click="submitRerunSearch" class="w-full bg-amber-600 text-white font-bold py-2 rounded shadow">
+          Re-execute Phase {{ activePhase }} Search
+        </button>
       </div>
     </div>
   </div>
@@ -441,25 +817,63 @@
           showAccountModal: false,
           isRegistering: false,
           authForm: { email: '', password: '' },
-          profileForm: { email: '', password: '', api_keys: { scopus: '', wos: '' } },
+          profileForm: {
+            email: '',
+            password: '',
+            api_keys: { s2: '', pubmed: '', core: '', ieee: '', scopus: '', scopus_insttoken: '', springer: '', wos: '' }
+          },
+          managedKeysList: [
+            { id: 's2', label: 'Semantic Scholar API Key', placeholder: 'S2_API_KEY' },
+            { id: 'pubmed', label: 'PubMed / NCBI API Key', placeholder: 'PUBMED_API_KEY' },
+            { id: 'core', label: 'CORE API Key', placeholder: 'CORE_API_KEY' },
+            { id: 'ieee', label: 'IEEE Xplore API Key', placeholder: 'IEEE_API_KEY' },
+            { id: 'scopus', label: 'Scopus API Key', placeholder: 'SCOPUS_API_KEY' },
+            { id: 'scopus_insttoken', label: 'Scopus Institutional Token', placeholder: 'SCOPUS_INSTTOKEN (optional)' },
+            { id: 'springer', label: 'Springer Nature API Key', placeholder: 'SPRINGER_API_KEY' },
+            { id: 'wos', label: 'Web of Science API Key', placeholder: 'WOS_API_KEY' },
+          ],
+          keyTestResults: {},
           projects: [],
           maxAllowed: 5,
           currentTab: 'dashboard',
           activeProject: null,
+          activePhase: 1,
           activeStage: 'search',
           stages: [
             { id: 'search', label: '1. Search & Harvest', icon: '🔎' },
             { id: 'dedup', label: '2. Deduplication', icon: '🧹' },
-            { id: 'ta_screening', label: '3. Title & Abstract', icon: '🤖' },
-            { id: 'fulltext', label: '4. Full-Text Screening', icon: '📄' },
-            { id: 'appraisal', label: '5. Quality Appraisal', icon: '⚖️' },
-            { id: 'prisma_export', label: '6. PRISMA & Export', icon: '📊' },
+            { id: 'ta_screening', label: '3. Title & Abstract AI', icon: '🤖' },
+            { id: 'review_gate', label: '4. Human Review Gate', icon: '🛡️' },
+            { id: 'query_expansion', label: '5. Query Expansion', icon: '📈' },
+            { id: 'consolidation', label: '⚙️ Consolidation Dashboard', icon: '🛠️' },
           ],
           candidatesList: [],
           dedupResult: null,
+          reviewGateData: null,
+          gateExcludes: [],
+          gateIncludes: [],
+          queryExpansionData: null,
+          selectedExpansionTerms: [],
+          extraExpansionTerms: '',
+          showFulltextModal: false,
           fulltextStudies: [],
-          appraisalData: null,
-          prismaCounts: null,
+          showSnowballModal: false,
+          snowballForm: { direction: 'both', max_per_seed: 50 },
+          showExtractionModal: false,
+          extractionRecords: [],
+          editingStudyId: '',
+          editingField: 'venue_tier',
+          editingValue: '',
+          showKappaModal: false,
+          kappaForm: { sheet_b_text: '', stage_col: 'ta_decision' },
+          kappaResult: null,
+          showReportModal: false,
+          reportModalTitle: '',
+          reportModalContent: '',
+          diagnoseResult: null,
+          showDiagnoseModal: false,
+          showRerunModal: false,
+          rerunForm: { mailto: '', year_from: 2020, year_to: 2026, max_per_source: 40 },
           form: {
             topic: '',
             block1: '',
@@ -472,7 +886,6 @@
           },
           aiPrompt: null,
           aiReply: '',
-          showGateModal: false
         };
       },
       mounted() {
@@ -495,7 +908,9 @@
               this.currentUser = data.user;
               localStorage.setItem('slr_user', JSON.stringify(data.user));
               this.profileForm.email = data.user.email;
-              this.profileForm.api_keys = data.user.api_keys || { scopus: '', wos: '' };
+              this.profileForm.api_keys = Object.assign({
+                s2: '', pubmed: '', core: '', ieee: '', scopus: '', scopus_insttoken: '', springer: '', wos: ''
+              }, data.user.api_keys || {});
               this.showAuthModal = false;
               this.authForm = { email: '', password: '' };
               await this.fetchProjects();
@@ -504,6 +919,29 @@
             }
           } catch (e) {
             alert('Error communicating with auth server');
+          }
+        },
+        async testKey(keyId) {
+          const val = this.profileForm.api_keys[keyId] || '';
+          if (!val.strip) {
+            this.keyTestResults[keyId] = { testing: false, valid: false, message: 'Please enter an API key first.' };
+            return;
+          }
+          this.keyTestResults[keyId] = { testing: true, valid: false, message: '' };
+          try {
+            const res = await fetch(`${API_BASE}/auth/test-key`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                service: keyId,
+                api_key: val,
+                insttoken: this.profileForm.api_keys.scopus_insttoken || ''
+              })
+            });
+            const data = await res.json();
+            this.keyTestResults[keyId] = { testing: false, valid: data.valid, message: data.message };
+          } catch (e) {
+            this.keyTestResults[keyId] = { testing: false, valid: false, message: 'Network error testing API key.' };
           }
         },
         async updateAccountProfile() {
@@ -612,15 +1050,30 @@
         },
         openProject(p) {
           this.activeProject = p;
+          this.activePhase = p.current_phase || 1;
           this.currentTab = 'workspace';
           this.activeStage = 'search';
+          this.rerunForm.mailto = p.config?.mailto || 'user@example.com';
+          this.rerunForm.year_from = p.config?.year_from || 2020;
+          this.rerunForm.year_to = p.config?.year_to || 2026;
+          this.rerunForm.max_per_source = p.config?.max_per_source || 40;
           this.runSearchStage();
+        },
+        onPhaseChange() {
+          this.candidatesList = [];
+          this.dedupResult = null;
+          this.reviewGateData = null;
+          this.queryExpansionData = null;
+          if (this.activeStage === 'search') this.runSearchStage();
+          else if (this.activeStage === 'dedup') this.runDedupStage();
+          else if (this.activeStage === 'review_gate') this.loadReviewGateData();
+          else if (this.activeStage === 'query_expansion') this.loadQueryExpansion();
         },
         async runSearchStage() {
           if (!this.activeProject) return;
           const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
           try {
-            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/search?user_id=${uid}`, { method: 'POST' });
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/search?user_id=${uid}&phase=${this.activePhase}`, { method: 'POST' });
             const data = await res.json();
             this.candidatesList = data.candidates || [];
           } catch (e) {
@@ -631,12 +1084,291 @@
           if (!this.activeProject) return;
           const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
           try {
-            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/dedup?user_id=${uid}`, { method: 'POST' });
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/stages/dedup?user_id=${uid}&phase=${this.activePhase}`, { method: 'POST' });
             const data = await res.json();
             this.dedupResult = data;
           } catch (e) {
             console.error(e);
           }
+        },
+        async loadReviewGateData() {
+          if (!this.activeProject) return;
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/review-gate?user_id=${uid}&phase=${this.activePhase}`);
+            this.reviewGateData = await res.json();
+            this.gateExcludes = [];
+            this.gateIncludes = [];
+          } catch (e) {
+            console.error(e);
+          }
+        },
+        toggleFlipToExclude(id) {
+          const idx = this.gateExcludes.indexOf(id);
+          if (idx >= 0) this.gateExcludes.splice(idx, 1);
+          else this.gateExcludes.push(id);
+        },
+        toggleFlipToInclude(id) {
+          const idx = this.gateIncludes.indexOf(id);
+          if (idx >= 0) this.gateIncludes.splice(idx, 1);
+          else this.gateIncludes.push(id);
+        },
+        async submitReviewGate() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/review-gate?user_id=${uid}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phase: this.activePhase, to_exclude: this.gateExcludes, to_include: this.gateIncludes })
+            });
+            const data = await res.json();
+            alert(`Gate updated! ${data.n_included} included studies.`);
+            await this.loadReviewGateData();
+          } catch (e) {
+            alert('Error updating review gate');
+          }
+        },
+        async loadQueryExpansion() {
+          if (!this.activeProject) return;
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/query-expansion?user_id=${uid}&phase=${this.activePhase}`);
+            this.queryExpansionData = await res.json();
+            this.selectedExpansionTerms = [];
+            this.extraExpansionTerms = '';
+          } catch (e) {
+            console.error(e);
+          }
+        },
+        async submitQueryExpansion() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/query-expansion?user_id=${uid}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                phase: this.activePhase,
+                selected_keywords: this.selectedExpansionTerms,
+                extra_keywords: this.extraExpansionTerms.split(',').map(s => s.trim()).filter(Boolean)
+              })
+            });
+            const data = await res.json();
+            alert(`Query expansion applied for Phase ${data.next_phase}! Next query: ${data.next_query}`);
+            this.activePhase = data.next_phase;
+            this.activeStage = 'search';
+            await this.runSearchStage();
+          } catch (e) {
+            alert('Error applying query expansion');
+          }
+        },
+        async doConsolidationMerge() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/merge?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            alert(`Merged ${data.n_merged} TA-included studies across phases!`);
+          } catch (e) {
+            alert('Error running consolidation merge');
+          }
+        },
+        async doSnowballing() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/snowball?user_id=${uid}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(this.snowballForm)
+            });
+            const data = await res.json();
+            alert(`Snowballing complete! Found ${data.n_found} candidates (${data.n_unique} unique).`);
+            this.showSnowballModal = false;
+          } catch (e) {
+            alert('Error running snowballing');
+          }
+        },
+        async doMergeSnowball() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/merge-snowball?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            alert(`Merged ${data.n_added} snowball studies (${data.n_duplicate} duplicates skipped).`);
+          } catch (e) {
+            alert('Error merging snowball results');
+          }
+        },
+        async doDownloadPdfs() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/download-pdfs?user_id=${uid}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ max_downloads: 50 })
+            });
+            const data = await res.json();
+            alert(`Downloaded ${data.n_downloaded} PDFs (${data.n_manual_needed} require manual retrieval).`);
+          } catch (e) {
+            alert('Error downloading PDFs');
+          }
+        },
+        async doVerifyCitations() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/verify-citations?user_id=${uid}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ limit: 10 })
+            });
+            const data = await res.json();
+            alert(`Citation verification complete: ${data.n_checked} checked, ${data.n_failed} failed.`);
+          } catch (e) {
+            alert('Error verifying citations');
+          }
+        },
+        async doBuildExtraction() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/extract?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            alert(`Extraction sheet built with ${data.n_rows} study rows.`);
+          } catch (e) {
+            alert('Error building extraction sheet');
+          }
+        },
+        async loadExtractionRecords() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/extraction-record?user_id=${uid}`);
+            const data = await res.json();
+            this.extractionRecords = data.records || [];
+            if (this.extractionRecords.length > 0 && !this.editingStudyId) {
+              this.editingStudyId = this.extractionRecords[0].id;
+            }
+          } catch (e) {
+            console.error(e);
+          }
+        },
+        async submitExtractionEdit() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/extraction-record?user_id=${uid}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ study_id: this.editingStudyId, field: this.editingField, value: this.editingValue })
+            });
+            const data = await res.json();
+            alert(data.message);
+            await this.loadExtractionRecords();
+          } catch (e) {
+            alert('Error updating extraction field');
+          }
+        },
+        async doGenerateFigures() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/figures?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            alert(`Figures generated! Created files: ${(data.generated_files || []).join(', ')}`);
+          } catch (e) {
+            alert('Error generating figures');
+          }
+        },
+        async doExportExclusions() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/export-exclusions?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            alert(`Exported ${data.n_excluded} full-text exclusions to ${data.csv_filename} and ${data.bib_filename}.`);
+          } catch (e) {
+            alert('Error exporting exclusions');
+          }
+        },
+        async submitKappa() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/kappa?user_id=${uid}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phase: this.activePhase, sheet_b_text: this.kappaForm.sheet_b_text, stage_col: this.kappaForm.stage_col })
+            });
+            this.kappaResult = await res.json();
+          } catch (e) {
+            alert('Error computing Kappa');
+          }
+        },
+        async doMethodsReport() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/methods-report?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            this.reportModalTitle = 'Draft Search Methods Paragraph';
+            this.reportModalContent = data.paragraph + '\n\n' + data.strategy_table;
+            this.showReportModal = true;
+          } catch (e) {
+            alert('Error drafting methods report');
+          }
+        },
+        async doSelfAppraisal() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/review-self-appraisal?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            this.reportModalTitle = 'Review Self-Appraisal Checklist';
+            this.reportModalContent = data.checklist_markdown;
+            this.showReportModal = true;
+          } catch (e) {
+            alert('Error generating self-appraisal checklist');
+          }
+        },
+        async doProvenanceReport() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/provenance?user_id=${uid}`, { method: 'POST' });
+            const data = await res.json();
+            this.reportModalTitle = 'PROVENANCE.md Audit Report';
+            this.reportModalContent = data.markdown;
+            this.showReportModal = true;
+          } catch (e) {
+            alert('Error generating provenance report');
+          }
+        },
+        async doDiagnoseRun() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/diagnose?user_id=${uid}`);
+            this.diagnoseResult = await res.json();
+            this.showDiagnoseModal = true;
+          } catch (e) {
+            alert('Error running diagnostics');
+          }
+        },
+        async submitRerunSearch() {
+          const uid = this.currentUser ? this.currentUser.user_id : 'default-user';
+          try {
+            const res = await fetch(`${API_BASE}/projects/${this.activeProject.project_id}/consolidation/rerun-search?user_id=${uid}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phase: this.activePhase, ...this.rerunForm })
+            });
+            const data = await res.json();
+            alert(`Phase ${this.activePhase} search re-executed! Candidates count: ${data.search_result?.candidates_count || 0}`);
+            this.showRerunModal = false;
+            await this.runSearchStage();
+          } catch (e) {
+            alert('Error re-running phase search');
+          }
+        },
+        async doVersionCheck() {
+          try {
+            const res = await fetch(`${API_BASE}/version-check`);
+            const data = await res.json();
+            alert(`Local Version: ${data.current_version}\nLatest Version: ${data.latest_version || 'N/A'}\nStatus: ${data.outcome}`);
+          } catch (e) {
+            alert('Error checking version');
+          }
+        },
+        copyReportContent() {
+          navigator.clipboard.writeText(this.reportModalContent);
+          alert('Copied to clipboard!');
         },
         async loadFulltextStudies() {
           if (!this.activeProject) return;
