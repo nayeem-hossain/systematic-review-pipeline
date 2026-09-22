@@ -4,22 +4,180 @@ import hashlib
 import json
 import os
 import secrets
+import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 AUTH_DB_FILE = Path("runs_web/users.json")
 AUTH_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+# Cryptographic encryption for sensitive fields (e.g. API keys)
+_fernet = None
+_enc_key = os.environ.get("APP_ENCRYPTION_KEY")
+if _enc_key:
+    try:
+        from cryptography.fernet import Fernet
+        _fernet = Fernet(_enc_key.encode("utf-8") if isinstance(_enc_key, str) else _enc_key)
+    except Exception as e:
+        print(f"Warning: Failed to initialize Fernet encryption with APP_ENCRYPTION_KEY: {e}")
+
+
+def encrypt_sensitive_data(val: str) -> str:
+    if not val or not _fernet:
+        return val
+    try:
+        return _fernet.encrypt(val.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return val
+
+
+def decrypt_sensitive_data(val: str) -> str:
+    if not val or not _fernet:
+        return val
+    try:
+        return _fernet.decrypt(val.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return val
+
+
+def encrypt_api_keys_dict(api_keys: Dict[str, str]) -> Dict[str, str]:
+    if not api_keys or not _fernet:
+        return api_keys
+    encrypted = {}
+    for k, v in api_keys.items():
+        if v:
+            encrypted[k] = encrypt_sensitive_data(v)
+        else:
+            encrypted[k] = ""
+    return encrypted
+
+
+def decrypt_api_keys_dict(api_keys: Dict[str, str]) -> Dict[str, str]:
+    if not api_keys or not _fernet:
+        return api_keys
+    decrypted = {}
+    for k, v in api_keys.items():
+        if v:
+            decrypted[k] = decrypt_sensitive_data(v)
+        else:
+            decrypted[k] = ""
+    return decrypted
+
+
+def _get_db_connection():
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        return None
+
+    if db_url.startswith("postgres://") or db_url.startswith("postgresql://"):
+        import psycopg2
+        url_clean = db_url.replace("postgres://", "postgresql://", 1)
+        conn = psycopg2.connect(url_clean)
+        return conn, "postgres"
+    elif db_url.startswith("sqlite://"):
+        sqlite_path = db_url.replace("sqlite:///", "").replace("sqlite://", "")
+        conn = sqlite3.connect(sqlite_path)
+        return conn, "sqlite"
+    return None, None
+
+
+def _init_db_schema_if_needed():
+    res = _get_db_connection()
+    if not res or res[0] is None:
+        return
+    conn, db_type = res
+    try:
+        with conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id VARCHAR(64) PRIMARY KEY,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    pwd_hash VARCHAR(255) NOT NULL,
+                    pwd_salt VARCHAR(255) NOT NULL,
+                    api_keys TEXT
+                );
+            """)
+            cur.close()
+    finally:
+        conn.close()
+
+
+# Ensure DB schema exists if DATABASE_URL is set
+if os.environ.get("DATABASE_URL"):
+    _init_db_schema_if_needed()
+
+
 def _load_users() -> Dict[str, Dict[str, Any]]:
+    res = _get_db_connection()
+    if res and res[0] is not None:
+        conn, db_type = res
+        try:
+            users = {}
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, email, pwd_hash, pwd_salt, api_keys FROM users;")
+            rows = cur.fetchall()
+            cur.close()
+            for r in rows:
+                uid, email, pwd_hash, salt, raw_keys_str = r[0], r[1], r[2], r[3], r[4]
+                raw_keys = json.loads(raw_keys_str) if raw_keys_str else {}
+                users[email] = {
+                    "user_id": uid,
+                    "email": email,
+                    "hash": pwd_hash,
+                    "salt": salt,
+                    "api_keys": decrypt_api_keys_dict(raw_keys),
+                }
+            return users
+        finally:
+            conn.close()
+
     if not AUTH_DB_FILE.exists():
         return {}
     try:
-        return json.loads(AUTH_DB_FILE.read_text(encoding="utf-8"))
+        data = json.loads(AUTH_DB_FILE.read_text(encoding="utf-8"))
+        # Decrypt API keys if encrypted
+        for _, udata in data.items():
+            if "api_keys" in udata:
+                udata["api_keys"] = decrypt_api_keys_dict(udata["api_keys"])
+        return data
     except Exception:
         return {}
 
+
 def _save_users(users: Dict[str, Dict[str, Any]]) -> None:
-    AUTH_DB_FILE.write_text(json.dumps(users, indent=2), encoding="utf-8")
+    res = _get_db_connection()
+    if res and res[0] is not None:
+        conn, db_type = res
+        try:
+            with conn:
+                cur = conn.cursor()
+                for email, udata in users.items():
+                    enc_keys = encrypt_api_keys_dict(udata.get("api_keys", {}))
+                    keys_json = json.dumps(enc_keys)
+                    ph = "%s" if db_type == "postgres" else "?"
+                    cur.execute(f"""
+                        INSERT INTO users (user_id, email, pwd_hash, pwd_salt, api_keys)
+                        VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+                        ON CONFLICT (email) DO UPDATE SET
+                            user_id = EXCLUDED.user_id,
+                            pwd_hash = EXCLUDED.pwd_hash,
+                            pwd_salt = EXCLUDED.pwd_salt,
+                            api_keys = EXCLUDED.api_keys;
+                    """, (udata["user_id"], udata["email"], udata["hash"], udata["salt"], keys_json))
+                cur.close()
+            return
+        finally:
+            conn.close()
+
+    # JSON fallback
+    save_data = {}
+    for email, udata in users.items():
+        ud_copy = dict(udata)
+        if "api_keys" in ud_copy:
+            ud_copy["api_keys"] = encrypt_api_keys_dict(ud_copy["api_keys"])
+        save_data[email] = ud_copy
+    AUTH_DB_FILE.write_text(json.dumps(save_data, indent=2), encoding="utf-8")
 
 def hash_password(password: str, salt: Optional[str] = None) -> tuple[str, str]:
     if salt is None:
@@ -123,6 +281,22 @@ def update_user_profile(user_id: str, new_email: Optional[str] = None, new_passw
     }
 
 def delete_user_account(user_id: str) -> bool:
+    res = _get_db_connection()
+    if res and res[0] is not None:
+        conn, db_type = res
+        try:
+            with conn:
+                cur = conn.cursor()
+                ph = "%s" if db_type == "postgres" else "?"
+                cur.execute(f"DELETE FROM users WHERE user_id = {ph};", (user_id,))
+                deleted = cur.rowcount > 0
+                cur.close()
+                if deleted:
+                    return True
+            return False
+        finally:
+            conn.close()
+
     users = _load_users()
     target_email = None
 
