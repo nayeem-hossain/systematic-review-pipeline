@@ -51,9 +51,13 @@ def _run_script_subprocess(cmd: list, secret_env: dict | None = None) -> tuple[i
     return res.returncode, res.stdout, res.stderr
 
 
-def _clean_df_records(df: pd.DataFrame) -> list[dict]:
+def _clean_df_records(df) -> list[dict]:
     if df.empty:
         return []
+    # Convert to DataFrame first if it's a Series
+    if hasattr(df, 'name'):  # Check if it's a Series
+        df = pd.DataFrame(df)
+    # Fill NaN and convert to list of dicts
     return df.fillna("").to_dict("records")
 
 
@@ -173,7 +177,7 @@ def _count_user_projects(user_id: str) -> int:
     user_dir = BASE_RUNS_DIR / user_id
     if not user_dir.exists():
         return 0
-    return len([d for d in user_dir.iterdir() if d.is_dir()])
+    return len([d for d in user_dir.iterdir() if d.is_dir() and (d / "config.json").exists()])
 
 
 def _get_user_api_keys(user_id: str) -> dict[str, str]:
@@ -317,6 +321,9 @@ def api_delete_account(user_id: str):
         shutil.rmtree(user_dir, ignore_errors=True)
 
     return {"status": "success", "message": "Account and associated data deleted"}
+@router.post("/auth/logout")
+def api_logout():
+    return {"status": "success", "message": "Logged out successfully"}
 
 
 # --- Project Endpoints ---
@@ -502,8 +509,11 @@ def get_review_gate_data(user_id: str, project_id: str, phase: int = 1):
         }
 
     decisions = df["ta_decision"].astype(str).str.strip().str.lower()
-    proceed_mask = ta_proceeds_mask(decisions)
+    # Convert to Series for ta_proceeds_mask
+    decisions_series = pd.Series(decisions)
+    proceed_mask = ta_proceeds_mask(decisions_series)
     excluded_mask = decisions.eq("exclude")
+    # Fix undecided mask
     undecided_mask = df["ta_decision"].isna() | (df["ta_decision"].astype(str).str.strip() == "")
 
     included_df = df[proceed_mask]
@@ -690,6 +700,8 @@ def consolidation_snowball(user_id: str, project_id: str, req: SnowballReq):
 
     secret_env = _build_secret_env_for_user(user_id)
     code, stdout, stderr = _run_script_subprocess(cmd, secret_env=secret_env)
+    if code != 0:
+        raise HTTPException(status_code=500, detail=f"Snowball script failed: {stderr}")
 
     cand_df = pd.read_csv(candidates_path) if candidates_path.exists() else pd.DataFrame()
     n_found = len(cand_df)
@@ -701,7 +713,9 @@ def consolidation_snowball(user_id: str, project_id: str, req: SnowballReq):
         "--out", str(dedup_path),
         "--title-threshold", str(cfg.title_threshold),
     ]
-    _run_script_subprocess(cmd_dedup)
+    dedup_code, dedup_stdout, dedup_stderr = _run_script_subprocess(cmd_dedup)
+    if dedup_code != 0:
+        raise HTTPException(status_code=500, detail=f"Dedup script failed: {dedup_stderr}")
 
     screening_path = snowball_dir / "screening.csv"
     cmd_screen = [
@@ -709,7 +723,9 @@ def consolidation_snowball(user_id: str, project_id: str, req: SnowballReq):
         "--in", str(dedup_path),
         "--out", str(screening_path),
     ]
-    _run_script_subprocess(cmd_screen)
+    screen_code, screen_stdout, screen_stderr = _run_script_subprocess(cmd_screen)
+    if screen_code != 0:
+        raise HTTPException(status_code=500, detail=f"Screen script failed: {screen_stderr}")
 
     dedup_df = pd.read_csv(dedup_path) if dedup_path.exists() else pd.DataFrame()
     screening_df = pd.read_csv(screening_path) if screening_path.exists() else pd.DataFrame()
@@ -737,7 +753,10 @@ def consolidation_merge_snowball(user_id: str, project_id: str):
     if screening_df.empty or "ta_decision" not in screening_df.columns:
         raise HTTPException(status_code=400, detail="Snowball screening sheet is empty or invalid.")
 
-    proceed = screening_df[ta_proceeds_mask(screening_df["ta_decision"])].copy()
+    ta_series = screening_df["ta_decision"].dropna()
+    if not isinstance(ta_series, pd.Series):
+        ta_series = pd.Series(ta_series)
+    proceed = screening_df[ta_proceeds_mask(ta_series)].copy()
     if proceed.empty:
         return {"status": "warning", "message": "No included/maybe rows in snowball screening sheet.", "n_added": 0}
 
@@ -1091,10 +1110,13 @@ def consolidation_export_exclusions(user_id: str, project_id: str):
     bib_path = pdir / "excluded_full_text.bib"
 
     excluded.to_csv(csv_path, index=False, encoding="utf-8")
-    bib_text = to_bibtex(excluded.to_dict("records"))
+    bib_text = to_bibtex([row.to_dict() for _, row in excluded.iterrows()])
     bib_path.write_text(bib_text, encoding="utf-8")
 
-    missing_reason = int((excluded["ft_reason"].isna() | (excluded["ft_reason"].astype(str).str.strip() == "")).sum()) if "ft_reason" in excluded.columns else len(excluded)
+    if "ft_reason" in excluded.columns:
+        missing_reason = int((excluded["ft_reason"].isna() | (excluded["ft_reason"].astype(str).str.strip() == "")).sum())
+    else:
+        missing_reason = len(excluded)
 
     prov = Provenance(pdir / "provenance.jsonl")
     prov.log("export_ft_exclusions", n_excluded=len(excluded), n_missing_reason=missing_reason)
@@ -1380,7 +1402,16 @@ def stage_search_harvest(user_id: str, project_id: str, phase: int = 1):
 
     if not candidates_path.exists():
         # Fallback empty dataframe if search script returned nothing or failed
-        df = pd.DataFrame(columns=["id", "source", "title", "authors", "year", "venue", "doi", "url", "abstract"])
+        df = pd.DataFrame()
+        df["id"] = []
+        df["source"] = []
+        df["title"] = []
+        df["authors"] = []
+        df["year"] = []
+        df["venue"] = []
+        df["doi"] = []
+        df["url"] = []
+        df["abstract"] = []
         df.to_csv(candidates_path, index=False, encoding="utf-8")
     else:
         df = pd.read_csv(candidates_path)
@@ -1467,9 +1498,14 @@ def get_fulltext_studies(user_id: str, project_id: str):
                 sc_df = pd.read_csv(sc_path)
                 if "ta_decision" in sc_df.columns:
                     inc_mask = ta_proceeds_mask(sc_df["ta_decision"])
-                    records.extend(sc_df[inc_mask].to_dict("records"))
+                    inc_df = sc_df.loc[inc_mask].to_dict("records")
+                    records.extend(inc_df)
 
-        inc_df = pd.DataFrame(records) if records else pd.DataFrame(columns=["id", "title", "authors", "year", "venue", "doi", "abstract"])
+        inc_df = pd.DataFrame(records) if records else pd.DataFrame()
+        if not inc_df.empty:
+            for col in ("id", "title", "authors", "year", "venue", "doi", "abstract"):
+                if col not in inc_df.columns:
+                    inc_df[col] = ""
         if "ft_decision" not in inc_df.columns:
             inc_df["ft_decision"] = ""
             inc_df["ft_reason"] = ""
