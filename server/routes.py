@@ -13,7 +13,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from server.auth import authenticate_user, delete_user_account, register_user, update_user_profile, _load_users
+from server.auth import authenticate_user, delete_user_account, get_user_profile, register_user, update_user_profile, _load_users
 import io
 from slr import (
     _extract_expansion_terms, _merge_included_across_phases,
@@ -275,6 +275,14 @@ def api_login(req: AuthReq):
     user_info = authenticate_user(req.email, req.password)
     if not user_info:
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    return {"status": "success", "user": user_info}
+
+
+@router.get("/auth/profile")
+def api_get_profile(user_id: str):
+    user_info = get_user_profile(user_id)
+    if not user_info:
+        raise HTTPException(status_code=404, detail="User profile not found")
     return {"status": "success", "user": user_info}
 
 
