@@ -10,11 +10,12 @@ from typing import List, Optional
 
 import httpx
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from server.auth import authenticate_user, delete_user_account, get_user_profile, register_user, update_user_profile, _load_users
 import io
+import json
 from slr import (
     _extract_expansion_terms, _merge_included_across_phases,
     _load_search_strategy_rows, _prisma_report_rows, _PHASE_FUNNEL_STAGES
@@ -45,6 +46,56 @@ MAX_PROJECTS_PER_USER = 5
 _SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
 
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[str, list[WebSocket]] = {}
+
+    async def connect(self, project_id: str, websocket: WebSocket):
+        await websocket.accept()
+        if project_id not in self.active_connections:
+            self.active_connections[project_id] = []
+        self.active_connections[project_id].append(websocket)
+
+    def disconnect(self, project_id: str, websocket: WebSocket):
+        if project_id in self.active_connections:
+            if websocket in self.active_connections[project_id]:
+                self.active_connections[project_id].remove(websocket)
+            if not self.active_connections[project_id]:
+                del self.active_connections[project_id]
+
+    async def broadcast(self, project_id: str, message: dict):
+        if project_id in self.active_connections:
+            dead = []
+            for connection in self.active_connections[project_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    dead.append(connection)
+            for d in dead:
+                self.disconnect(project_id, d)
+
+
+ws_manager = ConnectionManager()
+
+
+@router.websocket("/ws/{project_id}")
+async def websocket_endpoint(websocket: WebSocket, project_id: str):
+    await ws_manager.connect(project_id, websocket)
+    try:
+        await websocket.send_json({"type": "connected", "project_id": project_id, "message": "Real-time updates active."})
+        while True:
+            data = await websocket.receive_text()
+            # Echo or process client ping/event
+            try:
+                payload = json.loads(data)
+                if payload.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        ws_manager.disconnect(project_id, websocket)
+
+
 def _run_script_subprocess(cmd: list, secret_env: dict | None = None) -> tuple[int, str, str]:
     env = {**os.environ, **secret_env} if secret_env else None
     res = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -55,8 +106,8 @@ def _clean_df_records(df) -> list[dict]:
     if df.empty:
         return []
     # Convert to DataFrame first if it's a Series
-    if hasattr(df, 'name'):  # Check if it's a Series
-        df = pd.DataFrame(df)
+    if isinstance(df, pd.Series):
+        df = df.to_frame()
     # Fill NaN and convert to list of dicts
     return df.fillna("").to_dict("records")
 
@@ -164,7 +215,16 @@ class AppraisalReq(BaseModel):
 
 
 # --- Helpers ---
+def _require_profile_holder(user_id: str) -> None:
+    if not user_id or user_id in ("default-user", "guest", "null", "undefined"):
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: guest access is disabled. Only registered profile holders can access workspace and project operations."
+        )
+
+
 def _get_user_run_dir(user_id: str, project_id: str) -> Path:
+    _require_profile_holder(user_id)
     user_dir = BASE_RUNS_DIR / user_id
     user_dir.mkdir(exist_ok=True)
     pdir = user_dir / project_id
@@ -307,7 +367,7 @@ def api_update_profile(req: ProfileUpdateReq):
 @router.post("/auth/test-key")
 def api_test_key(req: TestKeyReq):
     success, message = _test_api_key(req.service, req.api_key, req.insttoken or "")
-    return {"valid": success, "message": message, "service": req.service}
+    return {"status": "success", "valid": success, "message": message, "service": req.service}
 
 
 @router.delete("/auth/account")
@@ -330,9 +390,10 @@ def api_logout():
 
 @router.get("/projects")
 def list_projects(user_id: str):
+    _require_profile_holder(user_id)
     user_dir = BASE_RUNS_DIR / user_id
     if not user_dir.exists():
-        return {"projects": [], "count": 0, "max_allowed": MAX_PROJECTS_PER_USER}
+        return {"status": "success", "projects": [], "count": 0, "max_allowed": MAX_PROJECTS_PER_USER}
 
     projects = []
     for pdir in user_dir.iterdir():
@@ -346,11 +407,12 @@ def list_projects(user_id: str):
                 "current_phase": state.state.get("current_phase", 1),
                 "created_at": state.state.get("created_at"),
             })
-    return {"projects": projects, "count": len(projects), "max_allowed": MAX_PROJECTS_PER_USER}
+    return {"status": "success", "projects": projects, "count": len(projects), "max_allowed": MAX_PROJECTS_PER_USER}
 
 
 @router.post("/projects")
 def create_project(req: ProjectCreateReq):
+    _require_profile_holder(req.user_id)
     current_count = _count_user_projects(req.user_id)
     if current_count >= MAX_PROJECTS_PER_USER:
         raise HTTPException(
@@ -394,14 +456,14 @@ def create_project(req: ProjectCreateReq):
     prov = Provenance(state.run_dir / "provenance.jsonl")
     prov.log("review_created", run_id=project_id, topic=cfg.topic, keywords=cfg.display_keywords())
 
-    return {"project_id": project_id, "message": "Project created successfully"}
+    return {"status": "success", "project_id": project_id, "message": "Project created successfully"}
 
 
 @router.delete("/projects/{project_id}")
 def delete_project(user_id: str, project_id: str):
     pdir = _get_user_run_dir(user_id, project_id)
     shutil.rmtree(pdir)
-    return {"message": f"Project {project_id} deleted successfully"}
+    return {"status": "success", "message": f"Project {project_id} deleted successfully"}
 
 
 @router.get("/projects/{project_id}/status")
@@ -409,6 +471,7 @@ def get_project_status(user_id: str, project_id: str):
     pdir = _get_user_run_dir(user_id, project_id)
     state = RunState.load(pdir)
     return {
+        "status": "success",
         "config": state.config,
         "state": state.state,
     }
@@ -445,7 +508,7 @@ def get_ai_assist_prompt(user_id: str, project_id: str, phase: int = 1):
 
     batch = undecided[:20]
     if not batch:
-        return {"prompt": None, "message": "No undecided candidates remaining."}
+        return {"status": "success", "prompt": None, "message": "No undecided candidates remaining."}
 
     criteria = compose_criteria("ta", cfg.inclusion_criteria, cfg.exclusion_criteria)
     records = [
@@ -455,6 +518,7 @@ def get_ai_assist_prompt(user_id: str, project_id: str, phase: int = 1):
     ]
     prompt = build_screening_prompt(records, stage="ta", topic=cfg.topic, criteria=criteria)
     return {
+        "status": "success",
         "prompt": prompt,
         "batch_size": len(batch),
         "total_undecided": len(undecided),
@@ -478,6 +542,7 @@ def parse_ai_assist_reply(user_id: str, project_id: str, req: ParseReplyReq):
     prov.log("assist_response_parsed_web", phase=req.phase, n_decided=len(applied.matched), counts=applied.counts)
 
     return {
+        "status": "success",
         "applied_counts": applied.counts,
         "matched_ids": applied.matched,
         "problems": applied.problems(),
@@ -493,6 +558,7 @@ def get_review_gate_data(user_id: str, project_id: str, phase: int = 1):
 
     if not screening_path.exists():
         return {
+            "status": "success",
             "included_or_maybe": [],
             "excluded": [],
             "undecided": [],
@@ -502,6 +568,7 @@ def get_review_gate_data(user_id: str, project_id: str, phase: int = 1):
     df = pd.read_csv(screening_path)
     if df.empty or "ta_decision" not in df.columns:
         return {
+            "status": "success",
             "included_or_maybe": [],
             "excluded": [],
             "undecided": [],
@@ -521,6 +588,7 @@ def get_review_gate_data(user_id: str, project_id: str, phase: int = 1):
     undecided_df = df[undecided_mask]
 
     return {
+        "status": "success",
         "included_or_maybe": _clean_df_records(included_df),
         "excluded": _clean_df_records(excluded_df),
         "undecided": _clean_df_records(undecided_df),
@@ -584,7 +652,7 @@ def apply_review_gate(user_id: str, project_id: str, req: ReviewGateReq):
     prov = Provenance(pdir / "provenance.jsonl")
     prov.log("phase_review", phase=req.phase, n_included=n_included, n_overridden=n_overridden)
 
-    return {"message": "Review gate updated successfully", "n_included": n_included, "n_overridden": n_overridden}
+    return {"status": "success", "message": "Review gate updated successfully", "n_included": n_included, "n_overridden": n_overridden}
 
 
 @router.get("/projects/{project_id}/query-expansion")
@@ -604,6 +672,7 @@ def get_query_expansion_suggestions(user_id: str, project_id: str, phase: int = 
 
     suggested_terms = _extract_expansion_terms(titles, cfg.all_keywords())
     return {
+        "status": "success",
         "phase": phase,
         "included_titles_count": len(titles),
         "suggested_terms": suggested_terms,
@@ -639,6 +708,7 @@ def apply_query_expansion(user_id: str, project_id: str, req: QueryExpansionReq)
     prov.log("query_expansion", from_phase=req.phase, added_keywords=added_terms)
 
     return {
+        "status": "success",
         "message": f"Query expansion applied for phase {next_phase}",
         "next_phase": next_phase,
         "next_query": next_query,
@@ -753,9 +823,7 @@ def consolidation_merge_snowball(user_id: str, project_id: str):
     if screening_df.empty or "ta_decision" not in screening_df.columns:
         raise HTTPException(status_code=400, detail="Snowball screening sheet is empty or invalid.")
 
-    ta_series = screening_df["ta_decision"].dropna()
-    if not isinstance(ta_series, pd.Series):
-        ta_series = pd.Series(ta_series)
+    ta_series = screening_df["ta_decision"].fillna("").astype(str)
     proceed = screening_df[ta_proceeds_mask(ta_series)].copy()
     if proceed.empty:
         return {"status": "warning", "message": "No included/maybe rows in snowball screening sheet.", "n_added": 0}
@@ -856,6 +924,7 @@ def get_consolidation_fulltext(user_id: str, project_id: str):
     n_undecided = len(df) - n_inc - n_exc
 
     return {
+        "status": "success",
         "studies": _clean_df_records(df),
         "n_included": n_inc,
         "n_excluded": n_exc,
@@ -884,6 +953,16 @@ def record_consolidation_fulltext_decision(user_id: str, project_id: str, req: F
 
     if dec == "exclude" and not reason:
         raise HTTPException(status_code=400, detail="A reason is required for full-text exclusion (PRISMA 16b).")
+
+    if "ft_decision" not in df.columns:
+        df["ft_decision"] = ""
+    else:
+        df["ft_decision"] = df["ft_decision"].astype(object)
+
+    if "ft_reason" not in df.columns:
+        df["ft_reason"] = ""
+    else:
+        df["ft_reason"] = df["ft_reason"].astype(object)
 
     df.at[idx, "ft_decision"] = dec
     df.at[idx, "ft_reason"] = reason
@@ -979,7 +1058,7 @@ def get_extraction_records(user_id: str, project_id: str):
         consolidation_build_extraction(user_id, project_id)
 
     df = pd.read_csv(ext_path) if ext_path.exists() else pd.DataFrame()
-    return {"records": _clean_df_records(df), "count": len(df)}
+    return {"status": "success", "records": _clean_df_records(df), "count": len(df)}
 
 
 @router.put("/projects/{project_id}/consolidation/extraction-record")
@@ -1148,11 +1227,27 @@ def consolidation_kappa(user_id: str, project_id: str, req: KappaReq):
         df_b = df_a.copy()
 
     stage = req.stage_col
-    if df_a.empty or df_b.empty or stage not in df_a.columns or stage not in df_b.columns:
-        raise HTTPException(status_code=400, detail=f"Both screening sheets must contain column '{stage}'")
+    # Fallback resolution for stage decision column (e.g. 'decision', 'ta_decision', 'ft_decision')
+    col_a = stage if stage in df_a.columns else next((c for c in ["decision", "ta_decision", "ft_decision", "status"] if c in df_a.columns), None)
+    col_b = stage if stage in df_b.columns else next((c for c in ["decision", "ta_decision", "ft_decision", "status"] if c in df_b.columns), None)
 
-    rows_a = {str(row.get("id", "")): row.to_dict() for _, row in df_a.iterrows()} if "id" in df_a.columns else {}
-    rows_b = {str(row.get("id", "")): row.to_dict() for _, row in df_b.iterrows()} if "id" in df_b.columns else {}
+    if df_a.empty or df_b.empty or not col_a or not col_b:
+        raise HTTPException(status_code=400, detail=f"Both screening sheets must contain decision column '{stage}' (or standard fallback)")
+
+    # Standardize column name for comparison
+    if col_a != stage:
+        df_a[stage] = df_a[col_a]
+    if col_b != stage:
+        df_b[stage] = df_b[col_b]
+
+    # Handle id column fallback if missing (fallback to string index)
+    if "id" not in df_a.columns:
+        df_a["id"] = [str(i) for i in range(len(df_a))]
+    if "id" not in df_b.columns:
+        df_b["id"] = [str(i) for i in range(len(df_b))]
+
+    rows_a = {str(row.get("id", "")): row.to_dict() for _, row in df_a.iterrows()}
+    rows_b = {str(row.get("id", "")): row.to_dict() for _, row in df_b.iterrows()}
 
     res = compare_reviewers(rows_a, rows_b, stage_col=stage)
 
@@ -1164,6 +1259,7 @@ def consolidation_kappa(user_id: str, project_id: str, req: KappaReq):
     prov.log("inter_rater_agreement", stage=stage, n_compared=res.n_compared, n_agreed=res.n_agreed, kappa=res.kappa, percent_agreement=res.percent_agreement)
 
     return {
+        "status": "success",
         "summary": res.summary(),
         "kappa": res.kappa,
         "percent_agreement": res.percent_agreement,
@@ -1298,6 +1394,7 @@ def consolidation_diagnose_run(user_id: str, project_id: str):
         funnel.append({"phase": phase, "stages": stages_info})
 
     return {
+        "status": "success",
         "phases_funnel": funnel,
         "file_mismatches": file_mismatches,
     }
@@ -1360,6 +1457,7 @@ def api_version_check():
         outcome = "outdated"
 
     return {
+        "status": "success",
         "current_version": VERSION,
         "latest_version": latest,
         "outcome": outcome,
@@ -1512,7 +1610,7 @@ def get_fulltext_studies(user_id: str, project_id: str):
         inc_df.to_csv(inc_final_path, index=False, encoding="utf-8")
 
     df = pd.read_csv(inc_final_path)
-    return {"studies": _clean_df_records(df), "count": len(df)}
+    return {"status": "success", "studies": _clean_df_records(df), "count": len(df)}
 
 
 @router.post("/projects/{project_id}/stages/fulltext")
@@ -1561,6 +1659,7 @@ def get_appraisal_instruments(user_id: str, project_id: str):
         instrument_fields[inst] = instrument_columns(inst)
 
     return {
+        "status": "success",
         "research_field": field,
         "instruments": instruments,
         "instrument_columns": instrument_fields,
@@ -1593,6 +1692,7 @@ def get_prisma_diagram_data(user_id: str, project_id: str):
     warnings = prisma_residuals(counts)
 
     return {
+        "status": "success",
         "prisma_counts": counts,
         "warnings": warnings,
     }
@@ -1612,8 +1712,8 @@ def export_references(user_id: str, project_id: str, export_format: str):
     records = _clean_df_records(df)
 
     if export_format.lower() == "bibtex":
-        return {"content": to_bibtex(records), "filename": "references.bib"}
+        return {"status": "success", "content": to_bibtex(records), "filename": "references.bib"}
     elif export_format.lower() == "ris":
-        return {"content": to_ris(records), "filename": "references.ris"}
+        return {"status": "success", "content": to_ris(records), "filename": "references.ris"}
     else:
         raise HTTPException(status_code=400, detail="Unsupported format. Use 'bibtex' or 'ris'.")

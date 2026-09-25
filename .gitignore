@@ -32,3 +32,30 @@ pdfs/
 # Scratch testbed for reproducing bugs against a pipx-style install -- not
 # project source, never committed.
 _testbed/
+
+# Temporary test / inspection artifacts
+*.log
+*.html
+!web/*.html
+api_test*.json
+auth_state.json
+call_create_project.json
+check_*.json
+click_*.json
+create_project_*.json
+debug_*.json
+fill_form*.json
+get_*.json
+handle_*.json
+list_*.json
+local_storage.json
+open_workspace.json
+page_snapshot_*.json
+probe_vue_instance*
+sample_errors.json
+set_*.json
+submit_form.json
+vue_instance_*.json
+scratch_*.py
+test_artifacts/
+.claude/

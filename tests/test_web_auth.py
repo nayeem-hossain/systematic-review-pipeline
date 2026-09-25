@@ -127,3 +127,87 @@ def test_sqlite_db_and_encryption_auth(monkeypatch, tmp_path):
     # Ensure deleted from DB
     login_res_deleted = client.post("/api/auth/login", json={"email": email, "password": pwd})
     assert login_res_deleted.status_code == 401
+
+
+def test_auth_full_lifecycle_and_key_persistence_integration():
+    """Integration test for Task 4.6 & 4.7:
+    Register -> Store API keys -> Log out -> Re-login in fresh session -> Verify keys persist -> Create project -> Execute stage.
+    """
+    user_email = f"lifecycle_{uuid.uuid4().hex[:6]}@example.com"
+    user_pwd = "integrationPassword123"
+
+    # 1. Register
+    reg_resp = client.post("/api/auth/register", json={"email": user_email, "password": user_pwd})
+    assert reg_resp.status_code == 200
+    user_id = reg_resp.json()["user"]["user_id"]
+
+    # 2. Add API Keys to user profile
+    keys_payload = {
+        "s2": "s2_live_test_key",
+        "pubmed": "pubmed_live_test_key",
+        "core": "core_live_test_key",
+        "ieee": "ieee_live_test_key"
+    }
+    prof_update = client.put("/api/auth/profile", json={
+        "user_id": user_id,
+        "api_keys": keys_payload
+    })
+    assert prof_update.status_code == 200
+    assert prof_update.json()["user"]["api_keys"]["core"] == "core_live_test_key"
+
+    # 3. Simulate Logout
+    logout_resp = client.post("/api/auth/logout")
+    assert logout_resp.status_code == 200
+
+    # 4. Fresh Login (New session)
+    fresh_login = client.post("/api/auth/login", json={"email": user_email, "password": user_pwd})
+    assert fresh_login.status_code == 200
+    logged_in_user = fresh_login.json()["user"]
+    # Task 4.7: Verify API key persistence across sessions
+    assert logged_in_user["api_keys"]["s2"] == "s2_live_test_key"
+    assert logged_in_user["api_keys"]["pubmed"] == "pubmed_live_test_key"
+    assert logged_in_user["api_keys"]["core"] == "core_live_test_key"
+    assert logged_in_user["api_keys"]["ieee"] == "ieee_live_test_key"
+
+    # 5. Create project under authenticated user
+    proj_resp = client.post("/api/projects", json={
+        "user_id": user_id,
+        "topic": "Lifecycle Integration Project",
+        "keyword_blocks": [["nlp"], ["transformers"]],
+    })
+    assert proj_resp.status_code == 200
+    pid = proj_resp.json()["project_id"]
+
+    # 6. Execute search stage
+    search_resp = client.post(f"/api/projects/{pid}/stages/search?user_id={user_id}&phase=1")
+    assert search_resp.status_code == 200
+    assert search_resp.json()["candidates_count"] > 0
+
+    # 7. Clean up
+    client.delete(f"/api/projects/{pid}?user_id={user_id}")
+    client.delete(f"/api/auth/account?user_id={user_id}")
+
+
+def test_guest_access_strictly_rejected():
+    # Attempting to access project listing as guest or default-user must return 401
+    for guest_id in ("default-user", "guest", "", "null", "undefined"):
+        res = client.get(f"/api/projects?user_id={guest_id}")
+        assert res.status_code == 401
+        assert "Authentication required: guest access is disabled" in res.json()["detail"]
+
+    # Attempting to create a project as guest or default-user must return 401
+    create_payload = {
+        "user_id": "default-user",
+        "topic": "Guest Attempt Review",
+        "keyword_blocks": [["test"]],
+    }
+    res_create = client.post("/api/projects", json=create_payload)
+    assert res_create.status_code == 401
+    assert "Authentication required: guest access is disabled" in res_create.json()["detail"]
+
+    # Attempting to access stage operations with guest identity must return 401
+    res_stage = client.post("/api/projects/dummyproj/stages/search?user_id=default-user&phase=1")
+    assert res_stage.status_code == 401
+    assert "Authentication required: guest access is disabled" in res_stage.json()["detail"]
+
+

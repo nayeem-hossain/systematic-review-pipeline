@@ -228,7 +228,7 @@ def authenticate_user(email: str, password: str) -> Optional[Dict[str, Any]]:
 def get_user_profile(user_id: str) -> Optional[Dict[str, Any]]:
     users = _load_users()
     for _, u_data in users.items():
-        if u_data.get("user_id") == user_id:
+        if u_data.get("user_id") == user_id or u_data.get("email") == user_id:
             return {
                 "user_id": u_data["user_id"],
                 "email": u_data["email"],
@@ -242,7 +242,7 @@ def update_user_profile(user_id: str, new_email: Optional[str] = None, new_passw
     target_user = None
 
     for email_k, u_data in users.items():
-        if u_data.get("user_id") == user_id:
+        if u_data.get("user_id") == user_id or u_data.get("email") == user_id:
             target_email = email_k
             target_user = u_data
             break
@@ -301,7 +301,7 @@ def delete_user_account(user_id: str) -> bool:
     target_email = None
 
     for email_k, u_data in users.items():
-        if u_data.get("user_id") == user_id:
+        if u_data.get("user_id") == user_id or u_data.get("email") == user_id:
             target_email = email_k
             break
 
